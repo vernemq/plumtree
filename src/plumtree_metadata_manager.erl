@@ -47,6 +47,9 @@
          graft/1,
          exchange/1]).
 
+%% used by storage backends
+-export([init_ets_for_full_prefix/1]).
+
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -56,16 +59,16 @@
 -include("plumtree_metadata.hrl").
 
 -define(SERVER, ?MODULE).
--define(MANIFEST, cluster_meta_manifest).
--define(MANIFEST_FILENAME, "manifest.dets").
 -define(ETS, metadata_manager_prefixes_ets).
+%-define(DEFAULT_STORAGE_BACKEND, plumtree_dets_metadata_manager).
+-define(DEFAULT_STORAGE_BACKEND, plumtree_leveldb_metadata_manager).
 
 -record(state, {
           %% identifier used in logical clocks
-          serverid   :: term(),
+          serverid              :: term(),
 
-          %% where data files are stored
-          data_root  :: file:filename(),
+          storage_mod           :: atom(),
+          storage_mod_state     :: any(),
 
           %% an ets table to hold iterators opened
           %% by other nodes
@@ -132,6 +135,10 @@ get(Node, {{Prefix, SubPrefix}, _Key}=PKey)
   when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
     gen_server:call({?SERVER, Node}, {get, PKey}, infinity).
+
+
+init_ets_for_full_prefix(FullPrefix) ->
+    init_ets(FullPrefix).
 
 
 %% @doc Returns a full-prefix iterator: an iterator for all full-prefixes that have keys stored under them
@@ -325,20 +332,20 @@ exchange(Peer) ->
                            ignore |
                            {stop, term()}.
 init([Opts]) ->
-    case data_root(Opts) of
-        undefined ->
-            {stop, no_data_dir};
-        DataRoot ->
-            ?ETS = ets:new(?ETS, [named_table,
-                                  {read_concurrency, true}, {write_concurrency, true}]),
+    ?ETS = ets:new(?ETS, [named_table,
+                          {read_concurrency, true}, {write_concurrency, true}]),
+    StorageMod = proplists:get_value(storage_mod, Opts, ?DEFAULT_STORAGE_BACKEND),
+    StorageModOpts = proplists:get_value(storage_mod_opts, Opts, []),
+    case StorageMod:init(StorageModOpts) of
+        {ok, StorageModState} ->
             Nodename = proplists:get_value(nodename, Opts, node()),
             State = #state{serverid=Nodename,
-                           data_root=DataRoot,
+                           storage_mod=StorageMod,
+                           storage_mod_state=StorageModState,
                            iterators=new_ets_tab()},
-            {ok, _} = init_manifest(State),
-            %% TODO: should do this out-of-band from startup so we don't block
-            init_from_files(State),
-            {ok, State}
+            {ok, State};
+        {error, Reason} ->
+            {stop, Reason}
     end.
 
 %% @private
@@ -398,9 +405,8 @@ handle_info({'DOWN', ItRef, process, _Pid, _Reason}, State) ->
 
 %% @private
 -spec terminate(term(), #state{}) -> term().
-terminate(_Reason, _State) ->
-    close_dets_tabs(),
-    ok = close_manifest().
+terminate(Reason, #state{storage_mod=Mod, storage_mod_state=ModSt}) ->
+    Mod:terminate(Reason, ModSt).
 
 %% @private
 -spec code_change(term() | {down, term()}, #state{}, term()) -> {ok, #state{}}.
@@ -556,16 +562,14 @@ read_merge_write(PKey, Obj, State) ->
             {true, NewState}
     end.
 
-store({FullPrefix, Key}=PKey, Metadata, State) ->
+store({FullPrefix, Key}=PKey, Metadata, #state{storage_mod=Mod, storage_mod_state=ModSt} = State) ->
     _ = maybe_init_ets(FullPrefix),
-    maybe_init_dets(FullPrefix, State#state.data_root),
-
     Objs = [{Key, Metadata}],
     Hash = plumtree_metadata_object:hash(Metadata),
     ets:insert(ets_tab(FullPrefix), Objs),
     plumtree_metadata_hashtree:insert(PKey, Hash),
-    ok = dets_insert(dets_tabname(FullPrefix), Objs),
-    {Metadata, State}.
+    {ok, NewModSt} = Mod:store(FullPrefix, Objs, ModSt),
+    {Metadata, State#state{storage_mod_state=NewModSt}}.
 
 read({FullPrefix, Key}) ->
     case ets_tab(FullPrefix) of
@@ -578,26 +582,6 @@ read(Key, TabId) ->
         [] -> undefined;
         [{Key, MetaRec}] -> MetaRec
     end.
-
-init_manifest(State) ->
-    ManifestFile = filename:join(State#state.data_root, ?MANIFEST_FILENAME),
-    ok = filelib:ensure_dir(ManifestFile),
-    {ok, ?MANIFEST} = dets:open_file(?MANIFEST, [{file, ManifestFile}]).
-
-close_manifest() ->
-    dets:close(?MANIFEST).
-
-init_from_files(State) ->
-    %% TODO: do this in parallel
-    dets_fold_tabnames(fun init_from_file/2, State).
-
-init_from_file(TabName, State) ->
-    FullPrefix = dets_tabname_to_prefix(TabName),
-    FileName = dets_file(State#state.data_root, FullPrefix),
-    {ok, TabName} = dets:open_file(TabName, [{file, FileName}]),
-    TabId = init_ets(FullPrefix),
-    TabId = dets:to_ets(TabName, TabId),
-    State.
 
 ets_tab(FullPrefix) ->
     case ets:lookup(?ETS, FullPrefix) of
@@ -618,68 +602,3 @@ init_ets(FullPrefix) ->
 
 new_ets_tab() ->
     ets:new(undefined, [{read_concurrency, true}, {write_concurrency, true}]).
-
-maybe_init_dets(FullPrefix, DataRoot) ->
-    case dets:info(dets_tabname(FullPrefix)) of
-        undefined -> init_dets(FullPrefix, DataRoot);
-        _ -> ok
-    end.
-
-init_dets(FullPrefix, DataRoot) ->
-    TabName = dets_tabname(FullPrefix),
-    FileName = dets_file(DataRoot, FullPrefix),
-    {ok, TabName} = dets:open_file(TabName, [{file, FileName}]),
-    dets_insert(?MANIFEST, [{FullPrefix, TabName, FileName}]).
-
-close_dets_tabs() ->
-    dets_fold_tabnames(fun close_dets_tab/2, undefined).
-
-close_dets_tab(TabName, _Acc) ->
-    dets:close(TabName).
-
-dets_insert(TabName, Objs) ->
-    ok = dets:insert(TabName, Objs),
-    ok = dets:sync(TabName).
-
-dets_tabname(FullPrefix) -> {?MODULE, FullPrefix}.
-dets_tabname_to_prefix({?MODULE, FullPrefix}) ->  FullPrefix.
-
-dets_file(DataRoot, FullPrefix) ->
-    filename:join(DataRoot, dets_filename(FullPrefix)).
-
-dets_filename({Prefix, SubPrefix}=FullPrefix) ->
-    MD5Prefix = dets_filename_part(Prefix),
-    MD5SubPrefix = dets_filename_part(SubPrefix),
-    Trailer = dets_filename_trailer(FullPrefix),
-    io_lib:format("~s-~s-~s.dets", [MD5Prefix, MD5SubPrefix, Trailer]).
-
-dets_filename_part(Part) when is_atom(Part) ->
-    dets_filename_part(list_to_binary(atom_to_list(Part)));
-dets_filename_part(Part) when is_binary(Part) ->
-    <<MD5Int:128/integer>> = crypto:hash(md5, (Part)),
-    integer_to_list(MD5Int, 16).
-
-dets_filename_trailer(FullPrefix) ->
-    [dets_filename_trailer_part(Part) || Part <- tuple_to_list(FullPrefix)].
-
-dets_filename_trailer_part(Part) when is_atom(Part) ->
-    "1";
-dets_filename_trailer_part(Part) when is_binary(Part)->
-    "0".
-
-dets_fold_tabnames(Fun, Acc0) ->
-    dets:foldl(fun({_FullPrefix, TabName, _FileName}, Acc) ->
-                       Fun(TabName, Acc)
-               end, Acc0, ?MANIFEST).
-
-data_root(Opts) ->
-    case proplists:get_value(data_dir, Opts) of
-        undefined -> default_data_root();
-        Root -> Root
-    end.
-
-default_data_root() ->
-    case application:get_env(plumtree, plumtree_data_dir) of
-        {ok, PRoot} -> filename:join(PRoot, "cluster_meta");
-        undefined -> undefined
-    end.
