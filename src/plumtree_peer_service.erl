@@ -95,7 +95,7 @@ stop() ->
 
 stop(Reason) ->
     lager:notice("~p", [Reason]),
-    init:stop().
+    ok.
 
 random_peer(Leave) ->
     Members = riak_dt_orswot:value(Leave),
