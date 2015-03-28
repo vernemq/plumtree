@@ -50,6 +50,11 @@
 %% used by storage backends
 -export([init_ets_for_full_prefix/1]).
 
+%% utilities
+-export([size/1,
+         subscribe/1,
+         unsubscribe/1]).
+
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -72,7 +77,9 @@
 
           %% an ets table to hold iterators opened
           %% by other nodes
-          iterators  :: ets:tab()
+          iterators             :: ets:tab(),
+
+          subscriptions         :: list({metadata_prefix(), {pid(), reference()}})
          }).
 
 -record(metadata_iterator, {
@@ -137,8 +144,25 @@ get(Node, {{Prefix, SubPrefix}, _Key}=PKey)
     gen_server:call({?SERVER, Node}, {get, PKey}, infinity).
 
 
+-spec init_ets_for_full_prefix(metadata_pkey()) -> ets:tid().
 init_ets_for_full_prefix(FullPrefix) ->
     init_ets(FullPrefix).
+
+-spec size(metadata_pkey()) -> non_neg_integer().
+size(FullPrefix) ->
+    case ets_tab(FullPrefix) of
+        undefined -> 0;
+        TabId -> ets:info(TabId, size)
+    end.
+
+-spec subscribe(metadata_pkey()) -> ok.
+subscribe(FullPrefix) ->
+    gen_server:call(?SERVER, {subscribe, FullPrefix, self()}, infinity).
+
+-spec unsubscribe(metadata_pkey()) -> ok.
+unsubscribe(FullPrefix) ->
+    gen_server:call(?SERVER, {unsubscribe, FullPrefix, self()}, infinity).
+
 
 
 %% @doc Returns a full-prefix iterator: an iterator for all full-prefixes that have keys stored under them
@@ -386,7 +410,22 @@ handle_call({iterator_close, RemoteRef}, _From, State) ->
 handle_call({is_stale, PKey, Context}, _From, State) ->
     Existing = read(PKey),
     IsStale = plumtree_metadata_object:is_stale(Context, Existing),
-    {reply, IsStale, State}.
+    {reply, IsStale, State};
+handle_call({subscribe, FullPrefix, Pid}, _From, #state{subscriptions=Subs} = State) ->
+    Ref = monitor(process, Pid),
+    NewSubs = lists:usort([{FullPrefix, {Pid, Ref}}|Subs]),
+    {reply, ok, State#state{subscriptions=NewSubs}};
+handle_call({unsubscribe, FullPrefix, Pid}, _From, #state{subscriptions=Subs} = State) ->
+    NewSubs =
+    lists:foldl(fun({F, {P, Ref}} = Obj, AccSubs)
+                      when (F == FullPrefix) and (P == Pid) ->
+                        demonitor(Ref, [flush]),
+                        AccSubs -- [Obj];
+                   (_, AccSubs) ->
+                        AccSubs
+                end, Subs, Subs),
+    {reply, ok, State#state{subscriptions=NewSubs}}.
+
 
 %% @private
 -spec handle_cast(term(), #state{}) -> {noreply, #state{}} |
@@ -399,9 +438,16 @@ handle_cast(_Msg, State) ->
 -spec handle_info(term(), #state{}) -> {noreply, #state{}} |
                                        {noreply, #state{}, non_neg_integer()} |
                                        {stop, term(), #state{}}.
-handle_info({'DOWN', ItRef, process, _Pid, _Reason}, State) ->
-    close_remote_iterator(ItRef, State),
-    {noreply, State}.
+handle_info({'DOWN', Ref, process, Pid, _Reason}, #state{subscriptions=Subs} = State) ->
+    NewState =
+    case lists:keyfind({Pid, Ref}, 2, Subs) of
+        false ->
+            close_remote_iterator(Ref, State),
+            State;
+        Obj ->
+            State#state{subscriptions=Subs -- [Obj]}
+    end,
+    {noreply, NewState}.
 
 %% @private
 -spec terminate(term(), #state{}) -> term().
@@ -562,14 +608,37 @@ read_merge_write(PKey, Obj, State) ->
             {true, NewState}
     end.
 
-store({FullPrefix, Key}=PKey, Metadata, #state{storage_mod=Mod, storage_mod_state=ModSt} = State) ->
+store({FullPrefix, Key}=PKey, Metadata, State) ->
+    #state{storage_mod=Mod,
+           storage_mod_state=ModSt,
+           subscriptions=Subs
+          } = State,
+
     _ = maybe_init_ets(FullPrefix),
     Objs = [{Key, Metadata}],
     Hash = plumtree_metadata_object:hash(Metadata),
-    ets:insert(ets_tab(FullPrefix), Objs),
+    Tab = ets_tab(FullPrefix),
+    Event =
+    case Metadata of
+        '$deleted' ->
+            OldMetadata = ets:lookup(Tab, Key),
+            ets:delete(Tab, Key),
+            {delete, FullPrefix, Key, OldMetadata};
+        _ ->
+            ets:insert(Tab, Objs),
+            {write, FullPrefix, Key, Metadata}
+    end,
     plumtree_metadata_hashtree:insert(PKey, Hash),
     {ok, NewModSt} = Mod:store(FullPrefix, Objs, ModSt),
+    trigger_subscription_event(FullPrefix, Event, Subs),
     {Metadata, State#state{storage_mod_state=NewModSt}}.
+
+trigger_subscription_event(FullPrefix, Event, [{FullPrefix, {Pid, _}}|Rest]) ->
+    Pid ! Event,
+    trigger_subscription_event(FullPrefix, Event, Rest);
+trigger_subscription_event(FullPrefix, Event, [_|Rest]) ->
+    trigger_subscription_event(FullPrefix, Event, Rest);
+trigger_subscription_event(_, _, []) -> ok.
 
 read({FullPrefix, Key}) ->
     case ets_tab(FullPrefix) of
