@@ -5,6 +5,7 @@
 
 -define(MANIFEST, cluster_meta_manifest).
 -define(MANIFEST_FILENAME, "manifest.dets").
+-define(TOMBSTONE, '$deleted').
 
 -record(state, {data_root}).
 
@@ -21,15 +22,20 @@ init(Opts) ->
 
 store(FullPrefix, Objs, State) ->
     maybe_init_dets(FullPrefix, State#state.data_root),
-    ok = dets_insert(dets_tabname(FullPrefix), Objs),
+    ok = dets_update(dets_tabname(FullPrefix), Objs, []),
     {ok, State}.
 
+dets_update(TabName, [{Key, ?TOMBSTONE}|Rest], Acc) ->
+    ok = dets_delete(TabName, Key),
+    dets_update(TabName, Rest, Acc);
+dets_update(TabName, [Obj|Rest], Acc) ->
+    dets_update(TabName, Rest, [Obj|Acc]);
+dets_update(TabName, [], Acc) ->
+    ok = dets_insert(TabName, Acc).
 
 terminate(_Reason, _State) ->
     close_dets_tabs(),
     ok = close_manifest().
-
-
 
 data_root(Opts) ->
     case proplists:get_value(data_dir, Opts) of
@@ -83,6 +89,10 @@ close_dets_tab(TabName, _Acc) ->
 
 dets_insert(TabName, Objs) ->
     ok = dets:insert(TabName, Objs),
+    ok = dets:sync(TabName).
+
+dets_delete(TabName, Key) ->
+    ok = dets:delete(TabName, Key),
     ok = dets:sync(TabName).
 
 dets_tabname(FullPrefix) -> {?MODULE, FullPrefix}.

@@ -366,7 +366,8 @@ init([Opts]) ->
             State = #state{serverid=Nodename,
                            storage_mod=StorageMod,
                            storage_mod_state=StorageModState,
-                           iterators=new_ets_tab()},
+                           iterators=new_ets_tab(),
+                           subscriptions=[]},
             {ok, State};
         {error, Reason} ->
             {stop, Reason}
@@ -597,7 +598,7 @@ iterator_match(KeyMatch) ->
 read_modify_write(PKey, Context, ValueOrFun, State=#state{serverid=ServerId}) ->
     Existing = read(PKey),
     Modified = plumtree_metadata_object:modify(Existing, Context, ValueOrFun, ServerId),
-    store(PKey, Modified, State).
+    store(PKey, ValueOrFun == '$deleted', Modified, State).
 
 read_merge_write(PKey, Obj, State) ->
     Existing = read(PKey),
@@ -608,28 +609,31 @@ read_merge_write(PKey, Obj, State) ->
             {true, NewState}
     end.
 
-store({FullPrefix, Key}=PKey, Metadata, State) ->
+store(PKey, Metadata, State) ->
+    store(PKey, false, Metadata, State).
+
+store({FullPrefix, Key}=PKey, IsDelete, Metadata, State) ->
     #state{storage_mod=Mod,
            storage_mod_state=ModSt,
            subscriptions=Subs
           } = State,
 
     _ = maybe_init_ets(FullPrefix),
-    Objs = [{Key, Metadata}],
     Hash = plumtree_metadata_object:hash(Metadata),
     Tab = ets_tab(FullPrefix),
-    Event =
-    case Metadata of
-        '$deleted' ->
-            OldMetadata = ets:lookup(Tab, Key),
+    {Event, ValToStore} =
+    case IsDelete of
+        true ->
+            Old = ets:lookup(Tab, Key),
             ets:delete(Tab, Key),
-            {delete, FullPrefix, Key, OldMetadata};
-        _ ->
-            ets:insert(Tab, Objs),
-            {write, FullPrefix, Key, Metadata}
+            {{delete, FullPrefix, Key,
+              [Val || {_, Val} <- Old]}, '$deleted'};
+        false ->
+            ets:insert(Tab, {Key, Metadata}),
+            {{write, FullPrefix, Key, Metadata}, Metadata}
     end,
     plumtree_metadata_hashtree:insert(PKey, Hash),
-    {ok, NewModSt} = Mod:store(FullPrefix, Objs, ModSt),
+    {ok, NewModSt} = Mod:store(FullPrefix, [{Key, ValToStore}], ModSt),
     trigger_subscription_event(FullPrefix, Event, Subs),
     {Metadata, State#state{storage_mod_state=NewModSt}}.
 
