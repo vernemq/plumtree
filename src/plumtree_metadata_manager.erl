@@ -65,8 +65,7 @@
 
 -define(SERVER, ?MODULE).
 -define(ETS, metadata_manager_prefixes_ets).
-%-define(DEFAULT_STORAGE_BACKEND, plumtree_dets_metadata_manager).
--define(DEFAULT_STORAGE_BACKEND, plumtree_leveldb_metadata_manager).
+-define(DEFAULT_STORAGE_BACKEND, plumtree_dets_metadata_manager).
 
 -record(state, {
           %% identifier used in logical clocks
@@ -358,8 +357,10 @@ exchange(Peer) ->
 init([Opts]) ->
     ?ETS = ets:new(?ETS, [named_table,
                           {read_concurrency, true}, {write_concurrency, true}]),
-    StorageMod = proplists:get_value(storage_mod, Opts, ?DEFAULT_STORAGE_BACKEND),
-    StorageModOpts = proplists:get_value(storage_mod_opts, Opts, []),
+    StorageMod = app_helper:get_prop_or_env(storage_mod, Opts,
+                                            plumtree, ?DEFAULT_STORAGE_BACKEND),
+    StorageModOpts = app_helper:get_prop_or_env(storage_mod_opts, Opts,
+                                                plumtree, []),
     case StorageMod:init(StorageModOpts) of
         {ok, StorageModState} ->
             Nodename = proplists:get_value(nodename, Opts, node()),

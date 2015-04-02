@@ -14,5 +14,7 @@
   {mod, { plumtree_app, []}},
   {modules, []},
   {env, [
+         {storage_mod, plumtree_dets_metadata_manager},
+         {storage_mod_opts, []},
          {plumtree_data_dir, "data"}]}
  ]}.
