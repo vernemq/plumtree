@@ -253,8 +253,7 @@ iterator_done(#metadata_iterator{done=Done}) -> Done.
 -spec iterator_close(metadata_iterator() | remote_iterator()) -> ok.
 iterator_close(#remote_iterator{ref=Ref,node=Node}) ->
     gen_server:call({?SERVER, Node}, {iterator_close, Ref}, infinity);
-iterator_close(#metadata_iterator{prefix=undefined,match=undefined,tab=Tab}) ->
-    ets:safe_fixtable(Tab, false),
+iterator_close(#metadata_iterator{prefix=undefined,match=undefined}) ->
     ok;
 iterator_close(It) -> finish_iterator(It).
 
@@ -540,7 +539,6 @@ empty_iterator(FullPrefix, KeyMatch, Tab) ->
 
 new_iterator(undefined, undefined, Tab) ->
     %% full-prefix iterator
-    ets:safe_fixtable(Tab, true),
     new_iterator(undefined, undefined, Tab, ets:first(Tab));
 new_iterator(undefined, Prefix, Tab) ->
     %% sub-prefix iterator
@@ -675,4 +673,4 @@ init_ets(FullPrefix) ->
     TabId.
 
 new_ets_tab() ->
-    ets:new(undefined, [{read_concurrency, true}, {write_concurrency, true}]).
+    ets:new(undefined, [ordered_set, {read_concurrency, true}, {write_concurrency, true}]).
