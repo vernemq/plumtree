@@ -175,7 +175,7 @@ iterator(FullPrefix) ->
 iterator({Prefix, SubPrefix}=FullPrefix, Opts)
   when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
-    KeyMatch = proplists:get_value(match, Opts),
+    KeyMatch = get_option(match, Opts, undefined),
     It = plumtree_metadata_manager:iterator(FullPrefix, KeyMatch),
     {It, Opts}.
 
@@ -279,7 +279,7 @@ itr_value({It, Opts}) ->
 %% This function should only be called after checking itr_done/1.
 -spec itr_default(iterator()) -> metadata_tombstone() | metadata_value() | it_opt_default_fun().
 itr_default({_, Opts}=It) ->
-    case proplists:get_value(default, Opts, ?TOMBSTONE) of
+    case get_option(default, Opts, ?TOMBSTONE) of
         Fun when is_function(Fun) ->
             Fun(itr_key(It));
         Val -> Val
@@ -386,4 +386,7 @@ prefixed_key(FullPrefix, Key) ->
     {FullPrefix, Key}.
 
 get_option(Key, Opts, Default) ->
-    proplists:get_value(Key, Opts, Default).
+    case lists:keyfind(Key, 1, Opts) of
+        false -> Default;
+        {_, Val} -> Val
+    end.
