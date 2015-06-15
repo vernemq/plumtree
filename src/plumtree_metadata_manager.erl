@@ -609,7 +609,8 @@ read_merge_write(PKey, Obj, State) ->
     end.
 
 store(PKey, Metadata, State) ->
-    store(PKey, false, Metadata, State).
+    IsDelete = plumtree_metadata_object:value(Metadata) == '$deleted',
+    store(PKey, IsDelete, Metadata, State).
 
 store({FullPrefix, Key}=PKey, IsDelete, Metadata, State) ->
     #state{storage_mod=Mod,
