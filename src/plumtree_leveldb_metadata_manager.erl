@@ -27,8 +27,6 @@ store(FullPrefix, Objs, State) ->
     ok = lvldb_insert(TabRef, Updates),
     {ok, NewState}.
 
-objs_to_updates([{Key, ?TOMBSTONE}|Rest], Acc) ->
-    objs_to_updates(Rest, [{delete, term_to_binary(Key)}|Acc]);
 objs_to_updates([{Key, Val}|Rest], Acc) ->
     objs_to_updates(Rest, [{put, term_to_binary(Key), term_to_binary(Val)}|Acc]);
 objs_to_updates([], Acc) -> Acc.

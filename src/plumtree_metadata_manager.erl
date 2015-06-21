@@ -597,7 +597,7 @@ iterator_match(KeyMatch) ->
 read_modify_write(PKey, Context, ValueOrFun, State=#state{serverid=ServerId}) ->
     Existing = read(PKey),
     Modified = plumtree_metadata_object:modify(Existing, Context, ValueOrFun, ServerId),
-    store(PKey, ValueOrFun == '$deleted', Modified, State).
+    store(PKey, Modified, State).
 
 read_merge_write(PKey, Obj, State) ->
     Existing = read(PKey),
@@ -608,15 +608,7 @@ read_merge_write(PKey, Obj, State) ->
             {true, NewState}
     end.
 
-store(PKey, Metadata, State) ->
-    IsDelete =
-    case plumtree_metadata_object:values(Metadata) of
-        ['$deleted'|_] -> true;
-        _ -> false
-    end,
-    store(PKey, IsDelete, Metadata, State).
-
-store({FullPrefix, Key}=PKey, IsDelete, Metadata, State) ->
+store({FullPrefix, Key}=PKey, Metadata, State) ->
     #state{storage_mod=Mod,
            storage_mod_state=ModSt,
            subscriptions=Subs
@@ -625,19 +617,24 @@ store({FullPrefix, Key}=PKey, IsDelete, Metadata, State) ->
     _ = maybe_init_ets(FullPrefix),
     Hash = plumtree_metadata_object:hash(Metadata),
     Tab = ets_tab(FullPrefix),
-    {Event, ValToStore} =
-    case IsDelete of
-        true ->
-            Old = ets:lookup(Tab, Key),
-            ets:delete(Tab, Key),
-            {{delete, FullPrefix, Key,
-              [Val || {_, Val} <- Old]}, '$deleted'};
-        false ->
-            ets:insert(Tab, {Key, Metadata}),
-            {{write, FullPrefix, Key, Metadata}, Metadata}
+    OldObj =
+    case read(Key, Tab) of
+        undefined ->
+            undefined;
+        OldMeta ->
+            [Val|_] = plumtree_metadata_object:values(OldMeta),
+            Val
     end,
+    Event =
+    case plumtree_metadata_object:values(Metadata) of
+        ['$deleted'|_] ->
+            {deleted, FullPrefix, Key, OldObj};
+        [NewObj|_] ->
+            {updated, FullPrefix, Key, OldObj, NewObj}
+    end,
+    ets:insert(Tab, {Key, Metadata}),
     plumtree_metadata_hashtree:insert(PKey, Hash),
-    {ok, NewModSt} = Mod:store(FullPrefix, [{Key, ValToStore}], ModSt),
+    {ok, NewModSt} = Mod:store(FullPrefix, [{Key, Metadata}], ModSt),
     trigger_subscription_event(FullPrefix, Event, Subs),
     {Metadata, State#state{storage_mod_state=NewModSt}}.
 
