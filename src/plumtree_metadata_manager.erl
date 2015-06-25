@@ -143,22 +143,22 @@ get(Node, {{Prefix, SubPrefix}, _Key}=PKey)
     gen_server:call({?SERVER, Node}, {get, PKey}, infinity).
 
 
--spec init_ets_for_full_prefix(metadata_pkey()) -> ets:tid().
+-spec init_ets_for_full_prefix(metadata_prefix()) -> ets:tid().
 init_ets_for_full_prefix(FullPrefix) ->
     init_ets(FullPrefix).
 
--spec size(metadata_pkey()) -> non_neg_integer().
+-spec size(metadata_prefix()) -> non_neg_integer().
 size(FullPrefix) ->
     case ets_tab(FullPrefix) of
         undefined -> 0;
         TabId -> ets:info(TabId, size)
     end.
 
--spec subscribe(metadata_pkey()) -> ok.
+-spec subscribe(metadata_prefix()) -> ok.
 subscribe(FullPrefix) ->
     gen_server:call(?SERVER, {subscribe, FullPrefix, self()}, infinity).
 
--spec unsubscribe(metadata_pkey()) -> ok.
+-spec unsubscribe(metadata_prefix()) -> ok.
 unsubscribe(FullPrefix) ->
     gen_server:call(?SERVER, {unsubscribe, FullPrefix, self()}, infinity).
 
