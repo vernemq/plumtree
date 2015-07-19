@@ -47,6 +47,9 @@
          graft/1,
          exchange/1]).
 
+%% used by cleanup
+-export([force_delete/1]).
+
 %% used by storage backends
 -export([init_ets_for_full_prefix/1]).
 
@@ -270,6 +273,13 @@ put({{Prefix, SubPrefix}, _Key}=PKey, Context, ValueOrFun)
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
     gen_server:call(?SERVER, {put, PKey, Context, ValueOrFun}, infinity).
 
+%% @doc forcefully deletes the key
+-spec force_delete(metadata_pkey()) -> ok.
+force_delete({{Prefix, SubPrefix}, _Key}=PKey)
+  when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
+       (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
+    gen_server:call(?SERVER, {force_delete, PKey}, infinity).
+
 %% @doc same as merge/2 but merges the object on `Node'
 -spec merge(node(), {metadata_pkey(), undefined | metadata_context()}, metadata_object()) -> boolean().
 merge(Node, {PKey, _Context}, Obj) ->
@@ -390,6 +400,9 @@ handle_call({merge, PKey, Obj}, _From, State) ->
 handle_call({get, PKey}, _From, State) ->
     Result = read(PKey),
     {reply, Result, State};
+handle_call({force_delete, PKey}, _From, State) ->
+    {Result, NewState} = force_delete(PKey, State),
+    {reply, Result, NewState};
 handle_call({open_remote_iterator, Pid, FullPrefix, KeyMatch}, _From, State) ->
     Iterator = new_remote_iterator(Pid, FullPrefix, KeyMatch, State),
     {reply, Iterator, State};
@@ -601,12 +614,36 @@ read_modify_write(PKey, Context, ValueOrFun, State=#state{serverid=ServerId}) ->
 
 read_merge_write(PKey, Obj, State) ->
     Existing = read(PKey),
-    case plumtree_metadata_object:reconcile(Obj, Existing) of
-        false -> {false, State};
-        {true, Reconciled} ->
-            {_, NewState} = store(PKey, Reconciled, State),
-            {true, NewState}
+    IsDeleted =
+    case {Obj, Existing} of
+        {undefined, undefined} -> true;
+        {undefined, O} ->
+            plumtree_metadata_object:values(O) == ['$deleted'];
+        {O, undefined} ->
+            plumtree_metadata_object:values(O) == ['$deleted'];
+        _ ->
+            false
+    end,
+    case IsDeleted of
+        true ->
+            {false, State};
+        false ->
+            case plumtree_metadata_object:reconcile(Obj, Existing) of
+                false -> {false, State};
+                {true, Reconciled} ->
+                    {_, NewState} = store(PKey, Reconciled, State),
+                    {true, NewState}
+            end
     end.
+
+force_delete({FullPrefix, Key}=PKey,
+             #state{storage_mod=Mod,
+                    storage_mod_state=ModSt} = State) ->
+    Tab = ets_tab(FullPrefix),
+    ets:delete(Tab, Key),
+    {ok, NewModSt} = Mod:delete(FullPrefix, Key, ModSt),
+    ok = plumtree_metadata_hashtree:delete(PKey),
+    {ok, State#state{storage_mod_state=NewModSt}}.
 
 store({FullPrefix, Key}=PKey, Metadata, State) ->
     #state{storage_mod=Mod,
@@ -665,13 +702,15 @@ ets_tab(FullPrefix) ->
 
 maybe_init_ets(FullPrefix) ->
     case ets_tab(FullPrefix) of
-        undefined -> init_ets(FullPrefix);
+        undefined ->
+            init_ets(FullPrefix);
         _TabId -> ok
     end.
 
 init_ets(FullPrefix) ->
     TabId = new_ets_tab(),
     ets:insert(?ETS, [{FullPrefix, TabId}]),
+    plumtree_metadata_cleanup_sup:add_full_prefix(FullPrefix),
     TabId.
 
 new_ets_tab() ->

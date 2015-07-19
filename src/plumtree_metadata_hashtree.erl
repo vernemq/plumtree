@@ -34,6 +34,7 @@
          lock/2,
          update/0,
          update/1,
+         delete/1,
          compare/3]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -163,6 +164,11 @@ update(Node) ->
 compare(RemoteFun, HandlerFun, HandlerAcc) ->
     gen_server:call(?SERVER, {compare, RemoteFun, HandlerFun, HandlerAcc}, infinity).
 
+
+-spec delete(metadata_pkey()) -> ok.
+delete(PKey) ->
+    gen_server:call(?SERVER, {delete, PKey}, infinity).
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -198,6 +204,10 @@ handle_call({prefix_hash, Prefix}, _From, State=#state{tree=Tree}) ->
 handle_call({insert, PKey, Hash, IfMissing}, _From, State=#state{tree=Tree}) ->
     {Prefixes, Key} = prepare_pkey(PKey),
     Tree1 = hashtree_tree:insert(Prefixes, Key, Hash, [{if_missing, IfMissing}], Tree),
+    {reply, ok, State#state{tree=Tree1}};
+handle_call({delete, PKey}, _From, State=#state{tree=Tree}) ->
+    {Prefixes, Key} = prepare_pkey(PKey),
+    Tree1 = hashtree_tree:delete(Prefixes, Key, Tree),
     {reply, ok, State#state{tree=Tree1}}.
 
 handle_cast(_Msg, State) ->

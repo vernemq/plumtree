@@ -1,6 +1,7 @@
 -module(plumtree_leveldb_metadata_manager).
 -export([init/1,
          store/3,
+         delete/3,
          terminate/2]).
 
 -define(MANIFEST, cluster_meta_manifest).
@@ -25,6 +26,12 @@ store(FullPrefix, Objs, State) ->
     {_, TabRef} = lists:keyfind(FullPrefix, 1, Refs),
     Updates = objs_to_updates(Objs, []),
     ok = lvldb_insert(TabRef, Updates),
+    {ok, NewState}.
+
+delete(FullPrefix, Key, State) ->
+    #state{tab_refs=Refs} = NewState = maybe_init_lvldb(FullPrefix, State),
+    {_, TabRef} = lists:keyfind(FullPrefix, 1, Refs),
+    ok = lvldb_delete(TabRef, Key),
     {ok, NewState}.
 
 objs_to_updates([{Key, Val}|Rest], Acc) ->
@@ -90,6 +97,9 @@ close_lvldb_tab({_FullPrefix, TabRef}) ->
 
 lvldb_insert(TabRef, Updates) ->
     eleveldb:write(TabRef, Updates, []).
+
+lvldb_delete(TabRef, Key) ->
+    eleveldb:delete(TabRef, Key, []).
 
 lvldb_file(DataRoot, FullPrefix) ->
     filename:join(DataRoot, lvldb_filename(FullPrefix)).

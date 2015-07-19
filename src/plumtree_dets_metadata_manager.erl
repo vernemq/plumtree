@@ -1,6 +1,7 @@
 -module(plumtree_dets_metadata_manager).
 -export([init/1,
          store/3,
+         delete/3,
          terminate/2]).
 
 -define(MANIFEST, cluster_meta_manifest).
@@ -24,6 +25,12 @@ store(FullPrefix, Objs, State) ->
     maybe_init_dets(FullPrefix, State#state.data_root),
     ok = dets_insert(dets_tabname(FullPrefix), Objs),
     {ok, State}.
+
+delete(FullPrefix, Key, State) ->
+    maybe_init_dets(FullPrefix, State#state.data_root),
+    ok = dets_delete(dets_tabname(FullPrefix), Key),
+    {ok, State}.
+
 
 terminate(_Reason, _State) ->
     close_dets_tabs(),
@@ -81,6 +88,10 @@ close_dets_tab(TabName, _Acc) ->
 
 dets_insert(TabName, Objs) ->
     ok = dets:insert(TabName, Objs),
+    ok = dets:sync(TabName).
+
+dets_delete(TabName, Key) ->
+    ok = dets:delete(TabName, Key),
     ok = dets:sync(TabName).
 
 dets_tabname(FullPrefix) -> {?MODULE, FullPrefix}.
