@@ -46,6 +46,9 @@
          graft/1,
          exchange/1]).
 
+%% used by cleanup
+-export([force_delete/1]).
+
 %% utilities
 -export([size/1,
          subscribe/1,
@@ -215,6 +218,13 @@ put({{Prefix, SubPrefix}, _Key}=PKey, Context, ValueOrFun)
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
     read_modify_write(PKey, Context, ValueOrFun).
 
+%% @doc forcefully deletes the key
+-spec force_delete(metadata_pkey()) -> ok.
+force_delete({{Prefix, SubPrefix}, _Key}=PKey)
+  when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
+       (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
+    gen_server:call(?SERVER, {force_delete, PKey}, infinity).
+
 %% @doc same as merge/2 but merges the object on `Node'
 -spec merge(node(), {metadata_pkey(), undefined | metadata_context()}, metadata_object()) -> boolean().
 merge(Node, {PKey, _Context}, Obj) ->
@@ -316,6 +326,9 @@ handle_call({merge, PKey, Obj}, _From, State) ->
 handle_call({get, PKey}, _From, State) ->
     Result = read(PKey),
     {reply, Result, State};
+handle_call({force_delete, PKey}, _From, State) ->
+    {Result, NewState} = force_delete(PKey, State),
+    {reply, Result, NewState};
 handle_call({open_remote_iterator, Pid, FullPrefix, KeyMatch}, _From, State) ->
     Iterator = new_remote_iterator(Pid, FullPrefix, KeyMatch),
     {reply, Iterator, State};
@@ -449,6 +462,7 @@ read_modify_write(PKey, Context, ValueOrFun) ->
 
 read_merge_write(PKey, Obj) ->
     Existing = read(PKey),
+<<<<<<< HEAD
     case plumtree_metadata_object:reconcile(Obj, Existing) of
         false -> false;
         {true, Reconciled} ->
@@ -478,6 +492,15 @@ store({FullPrefix, Key}=PKey, Metadata) ->
     trigger_subscription_event(FullPrefix, Event,
                               ets:lookup(?SUBS, FullPrefix)),
     Metadata.
+
+force_delete({FullPrefix, Key}=PKey,
+             #state{storage_mod=Mod,
+                    storage_mod_state=ModSt} = State) ->
+    Tab = ets_tab(FullPrefix),
+    ets:delete(Tab, Key),
+    {ok, NewModSt} = Mod:delete(FullPrefix, Key, ModSt),
+    ok = plumtree_metadata_hashtree:delete(PKey),
+    {ok, State#state{storage_mod_state=NewModSt}}.
 
 trigger_subscription_event(FullPrefix, Event, [{FullPrefix, {Pid, _}}|Rest]) ->
     Pid ! Event,
