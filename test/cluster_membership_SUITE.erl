@@ -119,7 +119,8 @@ leave_test(Config) ->
     [?assertEqual({Node, Expected}, {Node,
                                      lists:sort(plumtree_test_utils:get_cluster_members(Node))})
      || Node <- Nodes],
-    ?assertEqual(ok, rpc:call(Node1, plumtree_peer_service, leave, [[]])),
+    ?assertEqual(ok, rpc:call(Node1, plumtree_peer_service, leave,
+                              [[{stop_fun, fun init:stop/0}]])),
     Expected2 = lists:sort(OtherNodes),
     ok = plumtree_test_utils:wait_until_left(OtherNodes, Node1),
     %% should be a 3 node cluster now
@@ -140,7 +141,8 @@ leave_rejoin_test(Config) ->
     [?assertEqual({Node, Expected}, {Node,
                                      lists:sort(plumtree_test_utils:get_cluster_members(Node))})
      || Node <- Nodes],
-    ?assertEqual(ok, rpc:call(Node1, plumtree_peer_service, leave, [[]])),
+    ?assertEqual(ok, rpc:call(Node1, plumtree_peer_service, leave,
+                              [[{stop_fun, fun init:stop/0}]])),
     Expected2 = lists:sort(OtherNodes),
     ok = plumtree_test_utils:wait_until_left(OtherNodes, Node1),
     %% should be a 3 node cluster now
@@ -153,7 +155,7 @@ leave_rejoin_test(Config) ->
     %% rejoin cluster
     ?assertEqual(ok, rpc:call(Node1, plumtree_peer_service, join, [Node2])),
     ok = plumtree_test_utils:wait_until_joined(Nodes, Expected),
-    [?assertEqual({Node, Expected}, {Node, 
+    [?assertEqual({Node, Expected}, {Node,
                                      lists:sort(plumtree_test_utils:get_cluster_members(Node))})
      || Node <- Nodes],
     ok.
@@ -179,7 +181,8 @@ sticky_membership_test(Config) ->
     ct_slave:stop(jaguar),
     ok = plumtree_test_utils:wait_until_offline(Node1),
     [Node2|LastTwo] = OtherNodes,
-    ?assertEqual(ok, rpc:call(Node2, plumtree_peer_service, leave, [[]])),
+    ?assertEqual(ok, rpc:call(Node2, plumtree_peer_service, leave,
+                              [[{stop_fun, fun init:stop/0}]])),
     ok = plumtree_test_utils:wait_until_left(LastTwo, Node2),
     ok = plumtree_test_utils:wait_until_offline(Node2),
     Expected2 = lists:sort(Nodes -- [Node2]),

@@ -27,7 +27,8 @@
          attempt_join/2,
          leave/1,
          stop/0,
-         stop/1
+         stop/1,
+         stop/2
         ]).
 
 %% @doc prepare node to join a cluster
@@ -40,7 +41,7 @@ join(NodeStr, Auto) when is_list(NodeStr) ->
 join(Node, Auto) when is_atom(Node) ->
     join(node(), Node, Auto).
 
-%% @doc Initiate join. Nodes cannot join themselves. 
+%% @doc Initiate join. Nodes cannot join themselves.
 join(Node, Node, _) ->
     {error, self_join};
 join(_, Node, _Auto) ->
@@ -59,15 +60,15 @@ attempt_join(Node) ->
 
 attempt_join(Node, Local) ->
     {ok, Remote} = gen_server:call({plumtree_peer_service_gossip, Node}, send_state),
-    Merged = riak_dt_orswot:merge(Remote, Local), 
+    Merged = riak_dt_orswot:merge(Remote, Local),
     _ = plumtree_peer_service_manager:update_state(Merged),
     %% broadcast to all nodes
     %% get peer list
     Members = riak_dt_orswot:value(Merged),
     _ = [gen_server:cast({plumtree_peer_service_gossip, P}, {receive_state, Merged}) || P <- Members, P /= node()],
     ok.
-    
-leave(_Args) when is_list(_Args) ->
+
+leave(Args) when is_list(Args) ->
     {ok, Local} = plumtree_peer_service_manager:get_local_state(),
     {ok, Actor} = plumtree_peer_service_manager:get_actor(),
     {ok, Leave} = riak_dt_orswot:update({remove, node()}, Actor, Local),
@@ -82,21 +83,26 @@ leave(_Args) when is_list(_Args) ->
                 [] ->
                     %% leaving the cluster shuts down the node
                     plumtree_peer_service_manager:delete_state(),
-                    stop("Leaving cluster");
+                    stop("Leaving cluster", Args);
                 _ ->
-                    leave([])
+                    leave(Args)
             end;
         {error, singleton} ->
             lager:warning("Cannot leave, not a member of a cluster.")
     end;
-leave(_Args) ->
-    leave([]).
+leave(Args) ->
+    leave(Args).
 
 stop() ->
-    stop("received stop request").
+    stop("received stop request", []).
 
 stop(Reason) ->
+    stop(Reason, []).
+
+stop(Reason, Args) ->
+    StopFun = proplists:get_value(stop_fun, Args, fun() -> ok end),
     lager:notice("~p", [Reason]),
+    StopFun(),
     ok.
 
 random_peer(Leave) ->

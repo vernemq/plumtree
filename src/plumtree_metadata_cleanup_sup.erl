@@ -4,6 +4,8 @@
 
 %% API functions
 -export([start_link/0,
+         get_pid/1,
+         get_full_prefix_and_pid/0,
          add_full_prefix/1]).
 
 %% Supervisor callbacks
@@ -30,6 +32,19 @@ add_full_prefix(FullPrefix) ->
     supervisor:start_child(?MODULE,
                            ?CHILD({plumtree_metadata_cleanup, FullPrefix},
                                   plumtree_metadata_cleanup, worker, [FullPrefix])).
+
+get_pid(FullPrefix) ->
+    case lists:keyfind({plumtree_metadata_cleanup, FullPrefix}, 1,
+                       supervisor:which_children(?MODULE)) of
+        {_, Pid, _, _} when is_pid(Pid) ->
+            {ok, Pid};
+        _ ->
+            {error, not_found}
+    end.
+
+get_full_prefix_and_pid() ->
+    [{FullPrefix, Pid} || {{plumtree_metadata_cleanup, FullPrefix}, Pid, _, _}
+                          <- supervisor:which_children(?MODULE), is_pid(Pid)].
 
 
 %%%===================================================================
