@@ -5,7 +5,11 @@
 %% API functions
 -export([start_link/1,
          force_cleanup/1,
-         force_cleanup/2]).
+         force_cleanup/2,
+         set_interval/1,
+         set_interval/2,
+         cancel_cleanup/0,
+         cancel_cleanup/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -27,19 +31,45 @@ start_link(FullPrefix) ->
     gen_server:start_link(?MODULE, [FullPrefix], []).
 
 force_cleanup(AgeInSecs) when AgeInSecs > 0 ->
-    lists:foreach(fun({_FullPrefix, Pid}) ->
-                          force_cleanup(Pid, AgeInSecs)
-                  end, plumtree_metadata_cleanup_sup:get_full_prefix_and_pid()).
+    for_all_cleaners(fun force_cleanup/2, [AgeInSecs]).
 
 force_cleanup(FullPrefix, AgeInSecs) when is_tuple(FullPrefix) ->
-    case plumtree_metadata_cleanup_sup:get_pid(FullPrefix) of
-        {ok, Pid} ->
-            force_cleanup(Pid, AgeInSecs);
-        E ->
-            E
-    end;
+    for_cleaner(FullPrefix, fun force_cleanup/2, [AgeInSecs]);
 force_cleanup(Pid, AgeInSecs) when is_pid(Pid) and (AgeInSecs > 0) ->
     gen_server:call(Pid, {force_cleanup, AgeInSecs}, infinity).
+
+set_interval(Int) when Int >= 0 ->
+    for_all_cleaners(fun set_interval/2, [Int]).
+
+set_interval(FullPrefix, Int) when is_tuple(FullPrefix) and (Int >= 0) ->
+    for_cleaner(FullPrefix, fun set_interval/2, [Int]);
+set_interval(Pid, Int) when is_pid(Pid) and (Int >= 0) ->
+    gen_server:call(Pid, {set_interval, Int}, infinity).
+
+cancel_cleanup() ->
+    for_all_cleaners(fun cancel_cleanup/1, []).
+
+cancel_cleanup(FullPrefix) when is_tuple(FullPrefix) ->
+    for_cleaner(FullPrefix, fun cancel_cleanup/1, []);
+cancel_cleanup(Pid) when is_pid(Pid) ->
+    gen_server:call(Pid, cancel_cleanup, infinity).
+
+
+for_all_cleaners(Fun, Args) ->
+    lists:foreach(fun({_FullPrefix, Pid}) ->
+                          apply(Fun, [Pid|Args])
+                  end, plumtree_metadata_cleanup_sup:get_full_prefix_and_pid()).
+
+for_cleaner(FullPrefix, Fun, Args) ->
+    case plumtree_metadata_cleanup_sup:get_pid(FullPrefix) of
+        {ok, Pid} ->
+            apply(Fun, [Pid|Args]);
+        E ->
+            E
+    end.
+
+
+
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -103,8 +133,45 @@ handle_call({force_cleanup, AgeInSecs}, From, #state{tref=TRef,
                                   waiting=From}};
         _ ->
             {reply, {error, already_scheduled}, State}
+    end;
+handle_call({set_interval, IntInSecs}, _From, #state{waiting=Waiting,
+                                                     tref=TRef} = State) ->
+    case Waiting of
+        undefined ->
+            {NewInterval, NewTRef} =
+            case {IntInSecs, TRef} of
+                {0, undefined} ->
+                    {undefined, undefined};
+                {0, _} ->
+                    erlang:cancel_timer(TRef),
+                    {undefined, undefined};
+                {_, undefined} ->
+                    NewIntInSecs = IntInSecs * 1000,
+                    {NewIntInSecs, erlang:send_after(NewIntInSecs, self(), cleanup)};
+                {_, _} ->
+                    erlang:cancel_timer(TRef),
+                    NewIntInSecs = IntInSecs * 1000,
+                    {NewIntInSecs, erlang:send_after(NewIntInSecs, self(), cleanup)}
+            end,
+            {reply, ok, State#state{interval=NewInterval, tref=NewTRef}};
+        _ ->
+            {reply, {error, waiting_for_cleanup}, State}
+    end;
+handle_call(cancel_cleanup, _From, #state{waiting=Waiting,
+                                          interval=Interval} = State) ->
+    case Waiting of
+        undefined ->
+            {reply, {error, no_waiting_proc}, State};
+        _ ->
+            gen_server:reply(Waiting, canceled),
+            case Interval of
+                undefined ->
+                    {reply, ok, State#state{waiting=undefined}};
+                _ ->
+                    NewTRef = erlang:send_after(Interval, self(), cleanup),
+                    {reply, ok, State#state{waiting=undefined, tref=NewTRef}}
+            end
     end.
-
 
 %%--------------------------------------------------------------------
 %% @private

@@ -99,6 +99,7 @@ manual_force_cleanup_test(Config) ->
     ok = read_write_delete_test(Config),
     Nodes = proplists:get_value(nodes, Config),
     {Res1, _} = rpc:multicall(Nodes, plumtree_metadata_manager, size, [{foo, bar}]),
+    rpc:multicall(Nodes, plumtree_metadata_cleanup_sup, add_full_prefix, [{foo, bar}]),
 
     %% every node still has one tombstone entry in the ets cache
     ?assertEqual(length(Nodes), lists:sum(Res1)),

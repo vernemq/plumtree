@@ -223,7 +223,9 @@ put({{Prefix, SubPrefix}, _Key}=PKey, Context, ValueOrFun)
 force_delete({{Prefix, SubPrefix}, _Key}=PKey)
   when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
-    gen_server:call(?SERVER, {force_delete, PKey}, infinity).
+    ok = plumtree_metadata_hashtree:delete(PKey),
+    plumtree_metadata_leveldb_instance:delete(PKey),
+    ok.
 
 %% @doc same as merge/2 but merges the object on `Node'
 -spec merge(node(), {metadata_pkey(), undefined | metadata_context()}, metadata_object()) -> boolean().
@@ -326,9 +328,6 @@ handle_call({merge, PKey, Obj}, _From, State) ->
 handle_call({get, PKey}, _From, State) ->
     Result = read(PKey),
     {reply, Result, State};
-handle_call({force_delete, PKey}, _From, State) ->
-    {Result, NewState} = force_delete(PKey, State),
-    {reply, Result, NewState};
 handle_call({open_remote_iterator, Pid, FullPrefix, KeyMatch}, _From, State) ->
     Iterator = new_remote_iterator(Pid, FullPrefix, KeyMatch),
     {reply, Iterator, State};
@@ -462,12 +461,28 @@ read_modify_write(PKey, Context, ValueOrFun) ->
 
 read_merge_write(PKey, Obj) ->
     Existing = read(PKey),
-<<<<<<< HEAD
-    case plumtree_metadata_object:reconcile(Obj, Existing) of
-        false -> false;
-        {true, Reconciled} ->
-            store(PKey, Reconciled),
-            true
+    IsDeleted =
+    case {Obj, Existing} of
+        {undefined, undefined} ->
+            true;
+        {undefined, O} ->
+            plumtree_metadata_object:values(O) == ['$deleted'];
+        {O, undefined} ->
+            plumtree_metadata_object:values(O) == ['$deleted'];
+        _ ->
+            false
+    end,
+    case IsDeleted of
+        true ->
+            false;
+        false ->
+            case plumtree_metadata_object:reconcile(Obj, Existing) of
+                false ->
+                    false;
+                {true, Reconciled} ->
+                    store(PKey, Reconciled),
+                    true
+            end
     end.
 
 store({FullPrefix, Key}=PKey, Metadata) ->
@@ -492,15 +507,6 @@ store({FullPrefix, Key}=PKey, Metadata) ->
     trigger_subscription_event(FullPrefix, Event,
                               ets:lookup(?SUBS, FullPrefix)),
     Metadata.
-
-force_delete({FullPrefix, Key}=PKey,
-             #state{storage_mod=Mod,
-                    storage_mod_state=ModSt} = State) ->
-    Tab = ets_tab(FullPrefix),
-    ets:delete(Tab, Key),
-    {ok, NewModSt} = Mod:delete(FullPrefix, Key, ModSt),
-    ok = plumtree_metadata_hashtree:delete(PKey),
-    {ok, State#state{storage_mod_state=NewModSt}}.
 
 trigger_subscription_event(FullPrefix, Event, [{FullPrefix, {Pid, _}}|Rest]) ->
     Pid ! Event,
