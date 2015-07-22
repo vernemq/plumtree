@@ -31,7 +31,7 @@ store(FullPrefix, Objs, State) ->
 delete(FullPrefix, Key, State) ->
     #state{tab_refs=Refs} = NewState = maybe_init_lvldb(FullPrefix, State),
     {_, TabRef} = lists:keyfind(FullPrefix, 1, Refs),
-    ok = lvldb_delete(TabRef, Key),
+    ok = lvldb_delete(TabRef, term_to_binary(Key)),
     {ok, NewState}.
 
 objs_to_updates([{Key, Val}|Rest], Acc) ->
