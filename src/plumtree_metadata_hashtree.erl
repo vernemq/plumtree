@@ -297,33 +297,22 @@ build_async(State) ->
 
 %% @private
 build() ->
-    PrefixIt = plumtree_metadata_manager:iterator(),
-    build(PrefixIt).
+    Itr = plumtree_metadata_manager:iterator(),
+    build(Itr).
 
 %% @private
-build(PrefixIt) ->
-    case plumtree_metadata_manager:iterator_done(PrefixIt) of
+build(Itr) ->
+    case plumtree_metadata_manager:iterator_done(Itr) of
         true ->
-            plumtree_metadata_manager:iterator_close(PrefixIt);
+            plumtree_metadata_manager:iterator_close(Itr),
+            ok;
         false ->
-            Prefix = plumtree_metadata_manager:iterator_value(PrefixIt),
-            ObjIt = plumtree_metadata_manager:iterator(Prefix, undefined),
-            build(PrefixIt, ObjIt)
-    end.
-
-%% @private
-build(PrefixIt, ObjIt) ->
-    case plumtree_metadata_manager:iterator_done(ObjIt) of
-        true ->
-            plumtree_metadata_manager:iterator_close(ObjIt),
-            build(plumtree_metadata_manager:iterate(PrefixIt));
-        false ->
-            FullPrefix = plumtree_metadata_manager:iterator_prefix(ObjIt),
-            {Key, Obj} = plumtree_metadata_manager:iterator_value(ObjIt),
+            FullPrefix = plumtree_metadata_manager:iterator_prefix(Itr),
+            {Key, Obj} = plumtree_metadata_manager:iterator_value(Itr),
             Hash = plumtree_metadata_object:hash(Obj),
             %% insert only if missing to not clash w/ newer writes during build
             ?MODULE:insert({FullPrefix, Key}, Hash, true),
-            build(PrefixIt, plumtree_metadata_manager:iterate(ObjIt))
+            build(plumtree_metadata_manager:iterate(Itr))
     end.
 
 %% @private

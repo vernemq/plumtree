@@ -24,7 +24,6 @@
 
 %% API
 -export([start_link/0,
-         start_link/1,
          get/1,
          get/2,
          iterator/0,
@@ -47,9 +46,6 @@
          graft/1,
          exchange/1]).
 
-%% used by storage backends
--export([init_ets_for_full_prefix/1]).
-
 %% utilities
 -export([size/1,
          subscribe/1,
@@ -64,45 +60,19 @@
 -include("plumtree_metadata.hrl").
 
 -define(SERVER, ?MODULE).
--define(ETS, metadata_manager_prefixes_ets).
--define(DEFAULT_STORAGE_BACKEND, plumtree_dets_metadata_manager).
+-define(SUBS, plumtree_metadata_subscriptions).
 
--record(state, {
-          %% identifier used in logical clocks
-          serverid              :: term(),
-
-          storage_mod           :: atom(),
-          storage_mod_state     :: any(),
-
-          %% an ets table to hold iterators opened
-          %% by other nodes
-          iterators             :: ets:tab(),
-
-          subscriptions         :: list({metadata_prefix(), {pid(), reference()}})
-         }).
+-record(state, {}).
 
 -record(metadata_iterator, {
           prefix :: metadata_prefix(),
           match  :: term(),
           pos    :: term(),
           obj    :: {metadata_key(), metadata_object()} | undefined,
-          done   :: boolean(),
-          tab    :: ets:tab()
-         }).
-
--record(remote_iterator, {
-          node   :: node(),
-          ref    :: reference(),
-          prefix :: metadata_prefix() | atom() | binary()
+          done   :: boolean()
          }).
 
 -opaque metadata_iterator() :: #metadata_iterator{}.
--type remote_iterator()     :: #remote_iterator{}.
-
--type mm_path_opt()     :: {data_dir, file:name_all()}.
--type mm_nodename_opt() :: {nodename, term()}.
--type mm_opt()          :: mm_path_opt() | mm_nodename_opt().
--type mm_opts()         :: [mm_opt()].
 
 %%%===================================================================
 %%% API
@@ -111,18 +81,7 @@
 %% @doc Same as start_link([]).
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    start_link([]).
-
-%% @doc Start plumtree_metadadata_manager and link to calling process.
-%%
-%% The following options can be provided:
-%%    * data_dir: the root directory to place cluster metadata files.
-%%                if not provided this defaults to the `cluster_meta' directory in
-%%                plumtree's `platform_data_dir'.
-%%    * nodename: the node identifier (for use in logical clocks). defaults to node()
--spec start_link(mm_opts()) -> {ok, pid()} | ignore | {error, term()}.
-start_link(Opts) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [Opts], []).
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %% @doc Reads the value for a prefixed key. If the value does not exist `undefined' is
 %% returned. otherwise a Dotted Version Vector Set is returned. When reading the value
@@ -142,16 +101,18 @@ get(Node, {{Prefix, SubPrefix}, _Key}=PKey)
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
     gen_server:call({?SERVER, Node}, {get, PKey}, infinity).
 
-
--spec init_ets_for_full_prefix(metadata_prefix()) -> ets:tid().
-init_ets_for_full_prefix(FullPrefix) ->
-    init_ets(FullPrefix).
-
--spec size(metadata_prefix()) -> non_neg_integer().
+-spec size(metadata_prefix()) -> integer().
 size(FullPrefix) ->
-    case ets_tab(FullPrefix) of
-        undefined -> 0;
-        TabId -> ets:info(TabId, size)
+    It = new_iterator(FullPrefix, undefined, [keys_only]),
+    calc_size(It, 0).
+
+calc_size(It, Acc) ->
+    case iterator_done(It) of
+        true ->
+            iterator_close(It),
+            Acc;
+        false ->
+            calc_size(iterate(It), Acc + 1)
     end.
 
 -spec subscribe(metadata_prefix()) -> ok.
@@ -194,65 +155,49 @@ iterator({Prefix, SubPrefix}=FullPrefix, KeyMatch)
     open_iterator(FullPrefix, KeyMatch).
 
 %% @doc Create an iterator on `Node'. This allows for remote iteration by having
-%% the metadata manager keep track of the actual iterator (since ets continuations cannot
-%% cross node boundaries). The iterator created iterates all full-prefixes. Once created
-%% the rest of the iterator API may be used as usual. When done with the iterator,
-%% iterator_close/1 must be called
--spec remote_iterator(node()) -> remote_iterator().
+%% he iterator created iterates all full-prefixes. Once create the rest of the
+%% iterator API may be used as usual. When done with the iterator, iterator_close/1
+%% must be called
+-spec remote_iterator(node()) -> metadata_iterator().
 remote_iterator(Node) ->
     remote_iterator(Node, undefined).
 
-%% @doc Create an iterator on `Node'. This allows for remote iteration
-%% by having the metadata manager keep track of the actual iterator
-%% (since ets continuations cannot cross node boundaries). When
-%% `Perfix' is not a full prefix, the iterator created iterates all
-%% sub-prefixes under `Prefix'. Otherse, the iterator iterates all keys
-%% under a prefix. Once created the rest of the iterator API may be used as usual.
-%% When done with the iterator, iterator_close/1 must be called
--spec remote_iterator(node(), metadata_prefix() | binary() | atom() | undefined) -> remote_iterator().
+%% @doc Create an iterator on `Node'. When `Perfix' is not a full prefix,
+%% the iterator created iterates all sub-prefixes under `Prefix'. Otherse,
+%% the iterator iterates all keys under a prefix. Once created the rest of the
+%% iterator API may be used as usual. When done with the iterator,
+%% iterator_close/1 must be called
+-spec remote_iterator(node(), metadata_prefix() | binary() | atom() | undefined) -> metadata_iterator().
 remote_iterator(Node, Prefix) when is_atom(Prefix) or is_binary(Prefix) ->
-    Ref = gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), undefined, Prefix}, infinity),
-    #remote_iterator{ref=Ref,prefix=Prefix,node=Node};
+    gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), undefined, Prefix}, infinity);
 remote_iterator(Node, FullPrefix) when is_tuple(FullPrefix) ->
-    Ref = gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), FullPrefix, undefined}, infinity),
-    #remote_iterator{ref=Ref,prefix=FullPrefix,node=Node}.
+    gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), FullPrefix, undefined}, infinity).
 
 %% @doc advance the iterator by one key, full-prefix or sub-prefix
--spec iterate(metadata_iterator() | remote_iterator()) -> metadata_iterator() | remote_iterator().
-iterate(It=#remote_iterator{ref=Ref,node=Node}) ->
-    gen_server:call({?SERVER, Node}, {iterate, Ref}, infinity),
-    It;
+-spec iterate(metadata_iterator()) -> metadata_iterator().
 iterate(Iterator) ->
     next_iterator(Iterator).
 
 %% @doc return the full-prefix or prefix being iterated by this iterator. If the iterator is a
 %% full-prefix iterator undefined is returned.
--spec iterator_prefix(metadata_iterator() | remote_iterator()) ->
-                             metadata_prefix() | undefined | binary() | atom().
-iterator_prefix(#remote_iterator{prefix=Prefix}) -> Prefix;
+-spec iterator_prefix(metadata_iterator()) ->
+    metadata_prefix() | undefined | binary() | atom().
 iterator_prefix(#metadata_iterator{prefix=undefined,match=undefined}) -> undefined;
 iterator_prefix(#metadata_iterator{prefix=undefined,match=Prefix}) -> Prefix;
 iterator_prefix(#metadata_iterator{prefix=Prefix}) -> Prefix.
 
 %% @doc return the key and object or the prefix pointed to by the iterator
--spec iterator_value(metadata_iterator() | remote_iterator()) ->
-                            {metadata_key(), metadata_object()} |
-                            metadata_prefix() | binary() | atom().
-iterator_value(#remote_iterator{ref=Ref,node=Node}) ->
-    gen_server:call({?SERVER, Node}, {iterator_value, Ref}, infinity);
+-spec iterator_value(metadata_iterator()) ->
+    {metadata_key(), metadata_object()} | metadata_prefix() | binary() | atom().
 iterator_value(#metadata_iterator{prefix=undefined,match=undefined,pos=Pos}) -> Pos;
 iterator_value(#metadata_iterator{obj=Obj}) -> Obj.
 
 %% @doc returns true if there are no more keys or prefixes to iterate over
--spec iterator_done(metadata_iterator() | remote_iterator()) -> boolean().
-iterator_done(#remote_iterator{ref=Ref,node=Node}) ->
-    gen_server:call({?SERVER, Node}, {iterator_done, Ref}, infinity);
+-spec iterator_done(metadata_iterator()) -> boolean().
 iterator_done(#metadata_iterator{done=Done}) -> Done.
 
 %% @doc Closes the iterator. This function must be called on all open iterators
--spec iterator_close(metadata_iterator() | remote_iterator()) -> ok.
-iterator_close(#remote_iterator{ref=Ref,node=Node}) ->
-    gen_server:call({?SERVER, Node}, {iterator_close, Ref}, infinity);
+-spec iterator_close(metadata_iterator()) -> ok.
 iterator_close(#metadata_iterator{prefix=undefined,match=undefined}) ->
     ok;
 iterator_close(It) -> finish_iterator(It).
@@ -268,7 +213,7 @@ put(PKey, undefined, ValueOrFun) ->
 put({{Prefix, SubPrefix}, _Key}=PKey, Context, ValueOrFun)
   when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
-    gen_server:call(?SERVER, {put, PKey, Context, ValueOrFun}, infinity).
+    read_modify_write(PKey, Context, ValueOrFun).
 
 %% @doc same as merge/2 but merges the object on `Node'
 -spec merge(node(), {metadata_pkey(), undefined | metadata_context()}, metadata_object()) -> boolean().
@@ -349,29 +294,13 @@ exchange(Peer) ->
 %%%===================================================================
 
 %% @private
--spec init([mm_opts()]) -> {ok, #state{}} |
-                           {ok, #state{}, non_neg_integer() | infinity} |
-                           ignore |
-                           {stop, term()}.
-init([Opts]) ->
-    ?ETS = ets:new(?ETS, [named_table,
-                          {read_concurrency, true}, {write_concurrency, true}]),
-    StorageMod = app_helper:get_prop_or_env(storage_mod, Opts,
-                                            plumtree, ?DEFAULT_STORAGE_BACKEND),
-    StorageModOpts = app_helper:get_prop_or_env(storage_mod_opts, Opts,
-                                                plumtree, []),
-    case StorageMod:init(StorageModOpts) of
-        {ok, StorageModState} ->
-            Nodename = proplists:get_value(nodename, Opts, node()),
-            State = #state{serverid=Nodename,
-                           storage_mod=StorageMod,
-                           storage_mod_state=StorageModState,
-                           iterators=new_ets_tab(),
-                           subscriptions=[]},
-            {ok, State};
-        {error, Reason} ->
-            {stop, Reason}
-    end.
+-spec init([]) -> {ok, #state{}} |
+                  {ok, #state{}, non_neg_integer() | infinity} |
+                  ignore |
+                  {stop, term()}.
+init([]) ->
+    new_subscription_table(),
+    {ok, #state{}}.
 
 %% @private
 -spec handle_call(term(), {pid(), term()}, #state{}) ->
@@ -381,52 +310,34 @@ init([Opts]) ->
                          {noreply, #state{}, non_neg_integer()} |
                          {stop, term(), term(), #state{}} |
                          {stop, term(), #state{}}.
-handle_call({put, PKey, Context, ValueOrFun}, _From, State) ->
-    {Result, NewState} = read_modify_write(PKey, Context, ValueOrFun, State),
-    {reply, Result, NewState};
 handle_call({merge, PKey, Obj}, _From, State) ->
-    {Result, NewState} = read_merge_write(PKey, Obj, State),
-    {reply, Result, NewState};
+    Result = read_merge_write(PKey, Obj),
+    {reply, Result, State};
 handle_call({get, PKey}, _From, State) ->
     Result = read(PKey),
     {reply, Result, State};
 handle_call({open_remote_iterator, Pid, FullPrefix, KeyMatch}, _From, State) ->
-    Iterator = new_remote_iterator(Pid, FullPrefix, KeyMatch, State),
+    Iterator = new_remote_iterator(Pid, FullPrefix, KeyMatch),
     {reply, Iterator, State};
 handle_call({iterate, RemoteRef}, _From, State) ->
     Next = next_iterator(RemoteRef, State),
     {reply, Next, State};
-handle_call({iterator_value, RemoteRef}, _From, State) ->
-    Res = from_remote_iterator(fun iterator_value/1, RemoteRef, State),
-    {reply, Res, State};
-handle_call({iterator_done, RemoteRef}, _From, State) ->
-    Res = case from_remote_iterator(fun iterator_done/1, RemoteRef, State) of
-              undefined -> true; %% if we don't know about iterator, treat it as done
-              Other -> Other
-          end,
-    {reply, Res, State};
-handle_call({iterator_close, RemoteRef}, _From, State) ->
-    close_remote_iterator(RemoteRef, State),
-    {reply, ok, State};
 handle_call({is_stale, PKey, Context}, _From, State) ->
     Existing = read(PKey),
     IsStale = plumtree_metadata_object:is_stale(Context, Existing),
     {reply, IsStale, State};
-handle_call({subscribe, FullPrefix, Pid}, _From, #state{subscriptions=Subs} = State) ->
+handle_call({subscribe, FullPrefix, Pid}, _From, State) ->
     Ref = monitor(process, Pid),
-    NewSubs = lists:usort([{FullPrefix, {Pid, Ref}}|Subs]),
-    {reply, ok, State#state{subscriptions=NewSubs}};
-handle_call({unsubscribe, FullPrefix, Pid}, _From, #state{subscriptions=Subs} = State) ->
-    NewSubs =
-    lists:foldl(fun({F, {P, Ref}} = Obj, AccSubs)
-                      when (F == FullPrefix) and (P == Pid) ->
-                        demonitor(Ref, [flush]),
-                        AccSubs -- [Obj];
-                   (_, AccSubs) ->
-                        AccSubs
-                end, Subs, Subs),
-    {reply, ok, State#state{subscriptions=NewSubs}}.
-
+    ets:insert(?SUBS, {FullPrefix, {Pid, Ref}}),
+    {reply, ok, State};
+handle_call({unsubscribe, FullPrefix, Pid}, _From, State) ->
+    Subs = ets:lookup(?SUBS, FullPrefix),
+    lists:foreach(fun({_, {SubPid, MRef}} = Obj) when SubPid == Pid ->
+                          demonitor(MRef, [flush]),
+                          ets:delete_object(?SUBS, Obj);
+                     (_) -> ignore
+                  end, Subs),
+    {reply, ok, State}.
 
 %% @private
 -spec handle_cast(term(), #state{}) -> {noreply, #state{}} |
@@ -439,21 +350,14 @@ handle_cast(_Msg, State) ->
 -spec handle_info(term(), #state{}) -> {noreply, #state{}} |
                                        {noreply, #state{}, non_neg_integer()} |
                                        {stop, term(), #state{}}.
-handle_info({'DOWN', Ref, process, Pid, _Reason}, #state{subscriptions=Subs} = State) ->
-    NewState =
-    case lists:keyfind({Pid, Ref}, 2, Subs) of
-        false ->
-            close_remote_iterator(Ref, State),
-            State;
-        Obj ->
-            State#state{subscriptions=Subs -- [Obj]}
-    end,
-    {noreply, NewState}.
+handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
+    ets:match_delete(?SUBS, {'_', {Pid, Ref}}),
+    {noreply, State}.
 
 %% @private
 -spec terminate(term(), #state{}) -> term().
-terminate(Reason, #state{storage_mod=Mod, storage_mod_state=ModSt}) ->
-    Mod:terminate(Reason, ModSt).
+terminate(_Reason, _State) ->
+    ok.
 
 %% @private
 -spec code_change(term() | {down, term()}, #state{}, term()) -> {ok, #state{}}.
@@ -464,123 +368,69 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-new_remote_iterator(Pid, FullPrefix, KeyMatch, #state{iterators=Iterators}) ->
-    Ref = monitor(process, Pid),
-    Iterator = open_iterator(FullPrefix, KeyMatch),
-    ets:insert(Iterators, [{Ref, Iterator}]),
-    Ref.
+new_remote_iterator(Pid, FullPrefix, KeyMatch) ->
+    ObjectMatch = iterator_match(KeyMatch),
+    Ret = plumtree_metadata_leveldb_iterator:new(FullPrefix, ObjectMatch, Pid),
+    new_iterator(Ret).
 
-
-from_remote_iterator(Fun, RemoteRef, State) ->
-    case ets:lookup(State#state.iterators, RemoteRef) of
-        [] -> undefined;
-        [{RemoteRef, It}] -> Fun(It)
-    end.
-
-close_remote_iterator(Ref, State=#state{iterators=Iterators}) ->
-    from_remote_iterator(fun iterator_close/1, Ref, State),
-    ets:delete(Iterators, Ref).
-
-open_iterator(undefined, KeyMatch) ->
-    %% full or sub-prefix iterator
-    new_iterator(undefined, KeyMatch, ?ETS);
 open_iterator(FullPrefix, KeyMatch) ->
-    %% key/value iterator
-    case ets_tab(FullPrefix) of
-        undefined -> empty_iterator(FullPrefix, KeyMatch, undefined);
-        Tab -> new_iterator(FullPrefix, KeyMatch, Tab)
-    end.
+    new_iterator(FullPrefix, KeyMatch).
 
 next_iterator(It=#metadata_iterator{done=true}) ->
     %% general catch-all for all iterators
     It;
-next_iterator(It=#metadata_iterator{prefix=undefined,match=undefined,tab=Tab,pos=Pos}) ->
-    %% full-prefix iterator
-    next_iterator(It, ets:next(Tab, Pos));
-next_iterator(It=#metadata_iterator{prefix=undefined,pos=Pos}) ->
-    %% sub-prefix iterator
-    next_iterator(It, ets:select(Pos));
 next_iterator(It=#metadata_iterator{pos=Pos}) ->
     %% key/value iterator
-    next_iterator(It, ets:match_object(Pos)).
+    next_iterator(It, plumtree_metadata_leveldb_iterator:next(Pos)).
 
-next_iterator(Ref, #state{iterators=Iterators}) when is_reference(Ref) ->
-    %% remote iterator
-    case ets:lookup(Iterators, Ref) of
-        [] -> ok;
-        [{Ref, It}] ->
-            Next = next_iterator(It),
-            ets:insert(Iterators, [{Ref, Next}])
-    end,
-    Ref;
 next_iterator(It, '$end_of_table') ->
     %% general catch-all for all iterators
     It#metadata_iterator{done=true,
                          pos=undefined,
                          obj=undefined};
-next_iterator(It=#metadata_iterator{prefix=undefined,match=undefined},Next) ->
-    %% full-prefix iterator
-    It#metadata_iterator{pos=Next};
-next_iterator(It, {[Next], Cont}) ->
+next_iterator(It, {{{_FullPrefix, Key}, Val}, Cont}) ->
     %% sub-prefix or key/value iterator
     It#metadata_iterator{pos=Cont,
-                         obj=Next}.
+                         obj={Key, Val}};
+next_iterator(It, {{_FullPrefix, Key}, Cont}) ->
+    %% sub-prefix or key/value iterator
+    It#metadata_iterator{pos=Cont,
+                         obj={Key, undefined}}.
 
 %% universal empty iterator
-empty_iterator(FullPrefix, KeyMatch, Tab) ->
+empty_iterator() ->
     #metadata_iterator{
-                prefix=FullPrefix,
-                match=KeyMatch,
                 pos=undefined,
                 obj=undefined,
-                done=true,
-                tab=Tab
+                done=true
                }.
 
-new_iterator(undefined, undefined, Tab) ->
-    %% full-prefix iterator
-    new_iterator(undefined, undefined, Tab, ets:first(Tab));
-new_iterator(undefined, Prefix, Tab) ->
-    %% sub-prefix iterator
-    new_iterator(undefined, Prefix, Tab,
-                 ets:select(Tab, [{{{Prefix,'$1'},'_'},[],['$1']}], 1));
-new_iterator(FullPrefix, KeyMatch, Tab) ->
+new_iterator(FullPrefix, KeyMatch) ->
+    new_iterator(FullPrefix, KeyMatch, []).
+new_iterator(FullPrefix, KeyMatch, Opts) ->
     %% key/value iterator
     ObjectMatch = iterator_match(KeyMatch),
-    new_iterator(FullPrefix, KeyMatch, Tab, ets:match_object(Tab, ObjectMatch, 1)).
+    Ret = plumtree_metadata_leveldb_iterator:new(FullPrefix, ObjectMatch, Opts),
+    new_iterator(Ret).
 
-new_iterator(FullPrefix, KeyMatch, Tab, '$end_of_table') ->
+new_iterator('$end_of_table') ->
     %% catch-all for empty iterator of all types
-    empty_iterator(FullPrefix, KeyMatch, Tab);
-new_iterator(undefined, undefined, Tab, First) ->
-    %% full-prefix iterator
-    #metadata_iterator{
-       prefix=undefined,
-       match=undefined,
-       pos=First,
-       obj=undefined,
-       done=false,
-       tab=Tab
-      };
-new_iterator(undefined, Prefix, Tab, {[First], Cont}) ->
-    %% sub-prefix iterator
-    #metadata_iterator{
-       prefix=undefined,
-       match=Prefix,
-       pos=Cont,
-       obj=First,
-       done=false,
-       tab=Tab
-      };
-new_iterator(FullPrefix, KeyMatch, Tab, {[First], Cont}) ->
+    empty_iterator();
+new_iterator({{{FullPrefix, Key}, Val}, Cont}) ->
     %% key/value iterator
     #metadata_iterator{
        prefix=FullPrefix,
-       match=KeyMatch,
        pos=Cont,
-       obj=First,
-       done=false,
-       tab=Tab
+       obj={Key, Val},
+       done=false
+      };
+new_iterator({{FullPrefix, Key}, Cont}) ->
+    %% key/value iterator
+    #metadata_iterator{
+       prefix=FullPrefix,
+       pos=Cont,
+       obj={Key, undefined},
+       done=false
       }.
 
 finish_iterator(#metadata_iterator{done=true}) ->
@@ -589,36 +439,27 @@ finish_iterator(It) ->
     Next = next_iterator(It),
     finish_iterator(Next).
 
-iterator_match(undefined) ->
-    '_';
-iterator_match(KeyMatch) ->
-    {KeyMatch, '_'}.
+iterator_match(undefined) -> undefined;
+iterator_match(KeyMatch) when is_function(KeyMatch) -> KeyMatch.
 
-read_modify_write(PKey, Context, ValueOrFun, State=#state{serverid=ServerId}) ->
+read_modify_write(PKey, Context, ValueOrFun) ->
     Existing = read(PKey),
-    Modified = plumtree_metadata_object:modify(Existing, Context, ValueOrFun, ServerId),
-    store(PKey, Modified, State).
+    Modified = plumtree_metadata_object:modify(Existing, Context, ValueOrFun, node()),
+    store(PKey, Modified).
 
-read_merge_write(PKey, Obj, State) ->
+read_merge_write(PKey, Obj) ->
     Existing = read(PKey),
     case plumtree_metadata_object:reconcile(Obj, Existing) of
-        false -> {false, State};
+        false -> false;
         {true, Reconciled} ->
-            {_, NewState} = store(PKey, Reconciled, State),
-            {true, NewState}
+            store(PKey, Reconciled),
+            true
     end.
 
-store({FullPrefix, Key}=PKey, Metadata, State) ->
-    #state{storage_mod=Mod,
-           storage_mod_state=ModSt,
-           subscriptions=Subs
-          } = State,
-
-    _ = maybe_init_ets(FullPrefix),
+store({FullPrefix, Key}=PKey, Metadata) ->
     Hash = plumtree_metadata_object:hash(Metadata),
-    Tab = ets_tab(FullPrefix),
     OldObj =
-    case read(Key, Tab) of
+    case read(PKey) of
         undefined ->
             undefined;
         OldMeta ->
@@ -632,11 +473,11 @@ store({FullPrefix, Key}=PKey, Metadata, State) ->
         [NewObj|_] ->
             {updated, FullPrefix, Key, OldObj, NewObj}
     end,
-    ets:insert(Tab, {Key, Metadata}),
     plumtree_metadata_hashtree:insert(PKey, Hash),
-    {ok, NewModSt} = Mod:store(FullPrefix, [{Key, Metadata}], ModSt),
-    trigger_subscription_event(FullPrefix, Event, Subs),
-    {Metadata, State#state{storage_mod_state=NewModSt}}.
+    plumtree_metadata_leveldb_instance:put(PKey, Metadata),
+    trigger_subscription_event(FullPrefix, Event,
+                              ets:lookup(?SUBS, FullPrefix)),
+    Metadata.
 
 trigger_subscription_event(FullPrefix, Event, [{FullPrefix, {Pid, _}}|Rest]) ->
     Pid ! Event,
@@ -645,34 +486,16 @@ trigger_subscription_event(FullPrefix, Event, [_|Rest]) ->
     trigger_subscription_event(FullPrefix, Event, Rest);
 trigger_subscription_event(_, _, []) -> ok.
 
-read({FullPrefix, Key}) ->
-    case ets_tab(FullPrefix) of
-        undefined -> undefined;
-        TabId -> read(Key, TabId)
+read(PKey) ->
+    case plumtree_metadata_leveldb_instance:get(PKey) of
+        {ok, Val} -> Val;
+        {error, not_found} ->
+           undefined;
+        {error, Reason} ->
+            lager:warning("can't lookup key ~p due to ~p", [PKey, Reason]),
+            undefined
     end.
 
-read(Key, TabId) ->
-    case ets:lookup(TabId, Key) of
-        [] -> undefined;
-        [{Key, MetaRec}] -> MetaRec
-    end.
-
-ets_tab(FullPrefix) ->
-    case ets:lookup(?ETS, FullPrefix) of
-        [] -> undefined;
-        [{FullPrefix, TabId}] -> TabId
-    end.
-
-maybe_init_ets(FullPrefix) ->
-    case ets_tab(FullPrefix) of
-        undefined -> init_ets(FullPrefix);
-        _TabId -> ok
-    end.
-
-init_ets(FullPrefix) ->
-    TabId = new_ets_tab(),
-    ets:insert(?ETS, [{FullPrefix, TabId}]),
-    TabId.
-
-new_ets_tab() ->
-    ets:new(undefined, [ordered_set, {read_concurrency, true}, {write_concurrency, true}]).
+new_subscription_table() ->
+    ets:new(?SUBS,[bag, public, named_table,
+             {read_concurrency, true}, {write_concurrency, true}]).

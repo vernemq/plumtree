@@ -14,7 +14,11 @@
   {mod, { plumtree_app, []}},
   {modules, []},
   {env, [
-         {storage_mod, plumtree_dets_metadata_manager},
-         {storage_mod_opts, []},
-         {plumtree_data_dir, "data"}]}
+         {plumtree_data_dir, "data"},
+         {nr_of_meta_instances, 12},
+         {meta_leveldb_opts, [
+                              {sync, false},
+                              {total_leveldb_mem_percent, 6},
+                              {use_bloomfilter, true}]}
+        ]}
  ]}.
