@@ -71,7 +71,7 @@
           prefix :: metadata_prefix(),
           match  :: term(),
           pos    :: term(),
-          obj    :: {metadata_key(), metadata_object()} | undefined,
+          obj    :: {metadata_key(), metadata_object() | undefined} | undefined,
           done   :: boolean()
          }).
 
