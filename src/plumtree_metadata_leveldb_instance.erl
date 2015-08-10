@@ -33,6 +33,7 @@
          status/1,
          data_size/1,
          iterator/2,
+         iterator_move/2,
          iterator_close/2]).
 
 %% gen_server callbacks
@@ -50,10 +51,13 @@
                 read_opts = [],
                 write_opts = [],
                 fold_opts = [{fill_cache, false}],
-                open_iterators = []
+                open_iterators = [],
+                grace_secs,
+                cleanup=maps:new()
                }).
 
 -type config() :: [{atom(), term()}].
+-define(TOMBSTONE, '$deleted').
 
 %%%===================================================================
 %%% API functions
@@ -100,8 +104,12 @@ data_size(InstanceId) ->
 iterator(Instance, KeysOnly) when is_pid(Instance) or is_atom(Instance) ->
     gen_server:call(Instance, {new_iterator, self(), KeysOnly}, infinity).
 
-iterator_close(Instance, Itr) when is_pid(Instance) or is_atom(Instance) ->
+iterator_close(Instance, {_,_} = Itr) when is_pid(Instance) or is_atom(Instance) ->
     gen_server:call(Instance, {close_iterator, Itr}, infinity).
+
+iterator_move({MRef, Itr}, FirstKey) when is_reference(MRef) ->
+    eleveldb:iterator_move(Itr, FirstKey).
+
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -127,12 +135,18 @@ init([InstanceId, Opts]) ->
                              "meta"),
     DataDir2 = filename:join(DataDir1, integer_to_list(InstanceId)),
 
+    GraceSeconds = app_helper:get_prop_or_env(gc_grace_seconds, Opts, plumtree),
+
     %% Initialize state
     S0 = init_state(DataDir2, Opts),
     process_flag(trap_exit, true),
     case open_db(S0) of
         {ok, State} ->
-            {ok, State};
+            case GraceSeconds > 0 of
+                true -> timer:send_interval(GraceSeconds * 1000, force_cleanup);
+                false -> ignore
+            end,
+            {ok, init_cleanup(State#state{grace_secs=GraceSeconds})};
         {error, Reason} ->
             {stop, Reason}
     end.
@@ -161,20 +175,22 @@ handle_call({get, Key}, _From, #state{read_opts=ReadOpts, ref=Ref} = State) ->
             {reply, {error, Reason}, State}
     end;
 handle_call({put, Key, Value}, _From, #state{write_opts=WriteOpts, ref=Ref} = State) ->
-    Update = [{put, sext:encode(Key), term_to_binary(Value)}],
+    Update = {put, sext:encode(Key), term_to_binary(Value)},
+    {NewCleanup, CleanupOps} = maybe_trigger_cleanup(Key, Value, State),
     %% Perform the write...
-    case eleveldb:write(Ref, Update, WriteOpts) of
+    case eleveldb:write(Ref, [Update|CleanupOps], WriteOpts) of
         ok ->
-            {reply, ok, State};
+            {reply, ok, State#state{cleanup=NewCleanup}};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
 handle_call({delete, Key}, _From, #state{write_opts=WriteOpts, ref=Ref} = State) ->
-    Update = [{delete, sext:encode(Key)}],
+    Update = {delete, sext:encode(Key)},
+    {NewCleanup, CleanupOps} = maybe_trigger_cleanup(State),
     %% Perform the write...
-    case eleveldb:write(Ref, Update, WriteOpts) of
+    case eleveldb:write(Ref, [Update|CleanupOps], WriteOpts) of
         ok ->
-            {reply, ok, State};
+            {reply, ok, State#state{cleanup=NewCleanup}};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
@@ -202,9 +218,10 @@ handle_call({new_iterator, Owner, KeysOnly}, _From, #state{ref=Ref, fold_opts=Fo
         false ->
             eleveldb:iterator(Ref, FoldOpts)
     end,
-    {reply, Itr, State#state{open_iterators=[{MRef, Itr}|OpenIterators]}};
-handle_call({close_iterator, Itr}, _From, #state{open_iterators=OpenIterators} = State) ->
-    {MRef, _} = lists:keyfind(Itr, 2, OpenIterators),
+    {reply, {MRef, Itr}, State#state{open_iterators=[{MRef, Itr}|OpenIterators]}};
+handle_call({close_iterator, {MRef, _}}, _From, #state{open_iterators=OpenIterators} = State) ->
+    {MRef, Itr} = lists:keyfind(MRef, 1, OpenIterators),
+    eleveldb:iterator_close(Itr),
     demonitor(MRef, [flush]),
     {reply, ok, State#state{open_iterators=lists:keydelete(MRef, 1, OpenIterators)}}.
 
@@ -239,6 +256,11 @@ handle_info({'DOWN', MRef, process, _, _}, #state{open_iterators=OpenIterators} 
             eleveldb:iterator_close(Itr)
     end,
     {noreply, State#state{open_iterators=lists:keydelete(MRef, 1, OpenIterators)}};
+handle_info(force_cleanup, #state{ref=Ref, write_opts=WriteOpts} = State) ->
+    {NewCleanup, CleanupOps} = maybe_trigger_cleanup(State),
+    %% Perform the write...
+    eleveldb:write(Ref, CleanupOps, WriteOpts),
+    {noreply, State#state{cleanup=NewCleanup}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -364,3 +386,47 @@ open_db(State0, RetriesLeft, _) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+maybe_trigger_cleanup(Key, Val, #state{grace_secs=GS, cleanup=Cleanup}) when GS > 0 ->
+    Now = epoch(),
+    Cleanup1 =
+    case plumtree_metadata_object:values(Val) of
+        [?TOMBSTONE] ->
+            maps:put(Key, Now, Cleanup);
+        _ ->
+            maps:remove(Key, Cleanup)
+    end,
+    incr_cleanup(Cleanup1, Now, GS);
+maybe_trigger_cleanup(_, _, #state{cleanup=Cleanup}) ->
+    {Cleanup, []}.
+
+maybe_trigger_cleanup(#state{grace_secs=GS, cleanup=Cleanup}) when GS > 0->
+    incr_cleanup(Cleanup, epoch(), GS);
+maybe_trigger_cleanup(#state{cleanup=Cleanup}) ->
+    {Cleanup, []}.
+
+incr_cleanup(Cleanup, Now, GS) ->
+    KeysToDelete =
+    maps:fold(fun(K, V, Acc) when (Now - V) > GS ->
+                      [K|Acc];
+                 (_, _, Acc) ->
+                      Acc
+              end, [], Cleanup),
+    NewCleanup = maps:without(KeysToDelete, Cleanup),
+    {NewCleanup, [{delete, sext:encode(K)} || K <- KeysToDelete]}.
+
+init_cleanup(#state{cleanup=Cleanup, fold_opts=FoldOpts, ref=Ref} = State) ->
+    Now = epoch(),
+    NewCleanup =
+    eleveldb:fold(Ref, fun({BKey, BVal} , Acc) ->
+                               case plumtree_metadata_object:values(binary_to_term(BVal)) of
+                                   [?TOMBSTONE] ->
+                                       maps:put(sext:decode(BKey), Now, Acc);
+                                   _ -> Acc
+                               end
+                       end, Cleanup, FoldOpts),
+    State#state{cleanup=NewCleanup}.
+
+epoch() ->
+    {MegaSecs, Secs, _} = os:timestamp(),
+    MegaSecs * 1000000 + Secs.

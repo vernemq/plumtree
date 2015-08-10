@@ -39,9 +39,7 @@
          put/3,
          put/4,
          delete/2,
-         delete/3,
-         cleanup/2,
-         cleanup_all/1]).
+         delete/3]).
 
 -include("plumtree_metadata.hrl").
 
@@ -333,16 +331,6 @@ delete(FullPrefix, Key) ->
 -spec delete(metadata_prefix(), metadata_key(), delete_opts()) -> ok.
 delete(FullPrefix, Key, _Opts) ->
     put(FullPrefix, Key, ?TOMBSTONE, []).
-
-
--spec cleanup(metadata_prefix(), pos_integer()) -> ok | {error, any()}.
-cleanup(FullPrefix, AgeInSecs) ->
-    plumtree_metadata_cleanup:force_cleanup(FullPrefix, AgeInSecs).
-
--spec cleanup_all(metadata_prefix()) -> ok | {error, any()}.
-cleanup_all(AgeInSecs) ->
-    plumtree_metadata_cleanup:force_cleanup(AgeInSecs).
-
 
 %%%===================================================================
 %%% Internal functions

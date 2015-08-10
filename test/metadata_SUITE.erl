@@ -99,19 +99,11 @@ manual_force_cleanup_test(Config) ->
     ok = read_write_delete_test(Config),
     Nodes = proplists:get_value(nodes, Config),
     {Res1, _} = rpc:multicall(Nodes, plumtree_metadata_manager, size, [{foo, bar}]),
-    rpc:multicall(Nodes, plumtree_metadata_cleanup_sup, add_full_prefix, [{foo, bar}]),
 
     %% every node still has one tombstone entry in the ets cache
     ?assertEqual(length(Nodes), lists:sum(Res1)),
-
-    lists:foreach(fun(Node) ->
-                          %% this blocks for 5 seconds, during this time
-                          %% other nodes will discover the discrepancy in the
-                          %% hashtree and will try to replicate the proper
-                          %% tombstone... which we don't merge in read_write_merge.
-                          %% eventually all tombstones are removed.
-                          rpc:call(Node, plumtree_metadata, cleanup_all, [5])
-                  end, Nodes),
+    %% grace_seconds is 10 seconds, worst case we have to wait 2x that long
+    timer:sleep(20000),
     {Res2, _} = rpc:multicall(Nodes, plumtree_metadata_manager, size, [{foo, bar}]),
 
     ?assertEqual(0, lists:sum(Res2)),

@@ -188,12 +188,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 iterate([{Itr, _Instance}|_] = Instances, FullPrefix, KeyMatch, KeysOnly) ->
-    Res = eleveldb:iterator_move(Itr, prefetch),
+    Res = plumtree_metadata_leveldb_instance:iterator_move(Itr, prefetch),
     iterate(Res, Instances, FullPrefix, KeyMatch, KeysOnly);
 iterate([Instance|Rest], FullPrefix, KeyMatch, KeysOnly) when is_atom(Instance)->
     Itr = plumtree_metadata_leveldb_instance:iterator(Instance, KeysOnly),
     FirstKey = first_key(FullPrefix),
-    Res = eleveldb:iterator_move(Itr, FirstKey),
+    Res = plumtree_metadata_leveldb_instance:iterator_move(Itr, FirstKey),
     iterate(Res, [{Itr, Instance}|Rest], FullPrefix, KeyMatch, KeysOnly);
 iterate([], _, _, _) -> done.
 
@@ -223,6 +223,7 @@ iterate(OkVal, Instances, FullPrefix, KeyMatch, KeysOnly) when element(1, OkVal)
     end.
 
 prefix_match({_, Key}, undefined) -> {true, Key};
+prefix_match({_, Key}, {undefined, undefined}) -> {true, Key};
 prefix_match({{Prefix, _}, Key}, {Prefix, undefined}) -> {true, Key};
 prefix_match({{_, SubPrefix}, Key}, {undefined, SubPrefix}) -> {true, Key};
 prefix_match({FullPrefix, Key}, {_,_} = FullPrefix) -> {true, Key};
@@ -232,6 +233,6 @@ key_match(_, undefined) -> true;
 key_match(Key, KeyMatch) -> KeyMatch(Key).
 
 first_key(undefined) -> first;
-first_key({undefined, undefind}) -> first;
+first_key({undefined, undefined}) -> first;
 first_key({Prefix, undefined}) -> sext:encode({{Prefix, ''}, ''});
 first_key({_, _}=FullPrefix) -> sext:encode({FullPrefix, ''}).
