@@ -47,13 +47,6 @@
 %%% API functions
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts the server
-%%
-%% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
-%% @end
-%%--------------------------------------------------------------------
 new(FullPrefix, KeyMatch) ->
     new(FullPrefix, KeyMatch, self(), []).
 new(FullPrefix, KeyMatch, Owner) when is_pid(Owner) ->

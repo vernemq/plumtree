@@ -9,6 +9,7 @@
                                           metadata_value()).
 -type metadata_object()     :: {metadata, dvvset:clock()}.
 -type metadata_context()    :: dvvset:vector().
+-type metadata_keymatch()   :: fun((metadata_key()) -> boolean()) | undefined.
 
 -record(metadata_broadcast, {
           pkey  :: metadata_pkey(),
