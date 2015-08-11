@@ -136,22 +136,24 @@ iterator() ->
 
 %% @doc Returns a sub-prefix iterator for a given prefix.
 %% When done with the iterator, iterator_close/1 must be called
--spec iterator(binary() | atom()) -> metadata_iterator().
+-spec iterator(binary() | atom() | metadata_prefix()) -> metadata_iterator().
+iterator({Prefix, SubPrefix} = FullPrefix)
+  when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
+       (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
+    iterator(FullPrefix, undefined);
 iterator(Prefix) when is_binary(Prefix) or is_atom(Prefix) ->
-    open_iterator(undefined, Prefix).
+    iterator({Prefix, undefined}, undefined).
 
 %% @doc Return an iterator for keys stored under a prefix. If KeyMatch is undefined then
 %% all keys will may be visted by the iterator. Otherwise only keys matching KeyMatch will be
 %% visited.
 %%
-%% KeyMatch can be either:
-%%   * an erlang term - which will be matched exactly against a key
-%%   * '_' - which is equivalent to undefined
-%%   * an erlang tuple containing terms and '_' - if tuples are used as keys
-%%   * this can be used to iterate over some subset of keys
+%% KeyMatch has to be a function taking the key as parameter
+%% and returns either true or false, this can be used to iterate
+%% over some subset of keys
 %%
 %% When done with the iterator, iterator_close/1 must be called
--spec iterator(metadata_prefix() , term()) -> metadata_iterator().
+-spec iterator(metadata_prefix(), metadata_keymatch()) -> metadata_iterator().
 iterator({Prefix, SubPrefix}=FullPrefix, KeyMatch)
   when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
@@ -172,9 +174,9 @@ remote_iterator(Node) ->
 %% iterator_close/1 must be called
 -spec remote_iterator(node(), metadata_prefix() | binary() | atom() | undefined) -> metadata_iterator().
 remote_iterator(Node, Prefix) when is_atom(Prefix) or is_binary(Prefix) ->
-    gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), undefined, Prefix}, infinity);
+    gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), {Prefix, undefined}}, infinity);
 remote_iterator(Node, FullPrefix) when is_tuple(FullPrefix) ->
-    gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), FullPrefix, undefined}, infinity).
+    gen_server:call({?SERVER, Node}, {open_remote_iterator, self(), FullPrefix}, infinity).
 
 %% @doc advance the iterator by one key, full-prefix or sub-prefix
 -spec iterate(metadata_iterator()) -> metadata_iterator().
@@ -328,8 +330,8 @@ handle_call({merge, PKey, Obj}, _From, State) ->
 handle_call({get, PKey}, _From, State) ->
     Result = read(PKey),
     {reply, Result, State};
-handle_call({open_remote_iterator, Pid, FullPrefix, KeyMatch}, _From, State) ->
-    Iterator = new_remote_iterator(Pid, FullPrefix, KeyMatch),
+handle_call({open_remote_iterator, Pid, FullPrefix}, _From, State) ->
+    Iterator = new_remote_iterator(Pid, FullPrefix),
     {reply, Iterator, State};
 handle_call({iterate, RemoteRef}, _From, State) ->
     Next = next_iterator(RemoteRef, State),
@@ -380,8 +382,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-new_remote_iterator(Pid, FullPrefix, KeyMatch) ->
-    ObjectMatch = iterator_match(KeyMatch),
+new_remote_iterator(Pid, FullPrefix) ->
+    ObjectMatch = iterator_match(undefined),
     Ret = plumtree_metadata_leveldb_iterator:new(FullPrefix, ObjectMatch, Pid),
     new_iterator(Ret).
 
