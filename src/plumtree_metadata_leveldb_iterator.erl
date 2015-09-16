@@ -215,16 +215,15 @@ iterate(OkVal, Instances, FullPrefix, KeyMatch, KeysOnly) when element(1, OkVal)
             iterate(RestInstances, FullPrefix, KeyMatch, KeysOnly)
     end.
 
-prefix_match({_, Key}, undefined) -> {true, Key};
-prefix_match({{Prefix, _}, Key}, {Prefix, undefined}) -> {true, Key};
+prefix_match({_, Key},              {undefined, undefined}) -> {true, Key};
+prefix_match({{Prefix, _}, Key},    {Prefix,    undefined}) -> {true, Key};
 prefix_match({{_, SubPrefix}, Key}, {undefined, SubPrefix}) -> {true, Key};
-prefix_match({FullPrefix, Key}, {_,_} = FullPrefix) -> {true, Key};
+prefix_match({FullPrefix, Key},     FullPrefix) -> {true, Key};
 prefix_match(_, _) -> false.
 
 key_match(_, undefined) -> true;
 key_match(Key, KeyMatch) -> KeyMatch(Key).
 
-first_key(undefined) -> first;
 first_key({undefined, undefined}) -> first;
 first_key({Prefix, undefined}) -> sext:encode({{Prefix, ''}, ''});
 first_key({_, _}=FullPrefix) -> sext:encode({FullPrefix, ''}).
