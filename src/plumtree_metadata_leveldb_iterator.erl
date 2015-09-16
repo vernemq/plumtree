@@ -225,6 +225,6 @@ key_match(_, undefined) -> true;
 key_match(Key, KeyMatch) -> KeyMatch(Key).
 
 first_key(undefined) -> first;
-first_key({undefined, undefind}) -> first;
+first_key({undefined, undefined}) -> first;
 first_key({Prefix, undefined}) -> sext:encode({{Prefix, ''}, ''});
 first_key({_, _}=FullPrefix) -> sext:encode({FullPrefix, ''}).
