@@ -199,8 +199,7 @@ repair_sub_prefixes(Type, Peer, Prefix, It) ->
         true ->
             plumtree_metadata_manager:iterator_close(It);
         false ->
-            SubPrefix = plumtree_metadata_manager:iterator_value(It),
-            FullPrefix = {Prefix, SubPrefix},
+            FullPrefix = {Prefix, _}  = plumtree_metadata_manager:iterator_prefix(It),
 
             ItType = repair_iterator_type(Type),
             ObjIt = repair_iterator(ItType, Peer, FullPrefix),
@@ -252,7 +251,7 @@ merge(Peer, PKey, LocalObj) ->
 repair_iterator(local, _, Prefix) when is_atom(Prefix) orelse is_binary(Prefix) ->
     plumtree_metadata_manager:iterator(Prefix);
 repair_iterator(local, _, Prefix) when is_tuple(Prefix) ->
-    plumtree_metadata_manager:iterator(Prefix, undefined);
+    plumtree_metadata_manager:iterator(Prefix);
 repair_iterator(remote, Peer, PrefixOrFull) ->
     plumtree_metadata_manager:remote_iterator(Peer, PrefixOrFull).
 

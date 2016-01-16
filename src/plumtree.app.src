@@ -9,10 +9,17 @@
                   crypto,
                   lager,
                   eleveldb,
-                  riak_dt
+                  riak_dt,
+                  sext
                  ]},
   {mod, { plumtree_app, []}},
   {modules, []},
   {env, [
-         {plumtree_data_dir, "data"}]}
+         {plumtree_data_dir, "data"},
+         {nr_of_meta_instances, 12},
+         {meta_leveldb_opts, [
+                              {sync, false},
+                              {total_leveldb_mem_percent, 6},
+                              {use_bloomfilter, true}]}
+        ]}
  ]}.

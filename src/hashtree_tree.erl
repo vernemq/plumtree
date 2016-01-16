@@ -559,7 +559,7 @@ data_root(Opts) ->
     case proplists:get_value(data_dir, Opts) of
         undefined ->
             Base = "/tmp/hashtree_tree",
-            <<P:128/integer>> = crypto:hash(md5, term_to_binary(erlang:now())),
+            <<P:128/integer>> = crypto:hash(md5, term_to_binary(time_compat:timestamp())),
             filename:join(Base, integer_to_list(P, 16));
         Root -> Root
     end.

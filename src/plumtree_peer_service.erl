@@ -40,7 +40,7 @@ join(NodeStr, Auto) when is_list(NodeStr) ->
 join(Node, Auto) when is_atom(Node) ->
     join(node(), Node, Auto).
 
-%% @doc Initiate join. Nodes cannot join themselves. 
+%% @doc Initiate join. Nodes cannot join themselves.
 join(Node, Node, _) ->
     {error, self_join};
 join(_, Node, _Auto) ->
@@ -59,14 +59,14 @@ attempt_join(Node) ->
 
 attempt_join(Node, Local) ->
     {ok, Remote} = gen_server:call({plumtree_peer_service_gossip, Node}, send_state),
-    Merged = riak_dt_orswot:merge(Remote, Local), 
-    _ = plumtree_peer_service_manager:update_state(Merged),
+    Merged = riak_dt_orswot:merge(Remote, Local),
+    %_ = plumtree_peer_service_manager:update_state(Merged),
     %% broadcast to all nodes
     %% get peer list
     Members = riak_dt_orswot:value(Merged),
-    _ = [gen_server:cast({plumtree_peer_service_gossip, P}, {receive_state, Merged}) || P <- Members, P /= node()],
+    _ = [gen_server:cast({plumtree_peer_service_gossip, P}, {receive_state, Merged}) || P <- Members],
     ok.
-    
+
 leave(_Args) when is_list(_Args) ->
     {ok, Local} = plumtree_peer_service_manager:get_local_state(),
     {ok, Actor} = plumtree_peer_service_manager:get_actor(),
@@ -97,7 +97,7 @@ stop() ->
 
 stop(Reason) ->
     lager:notice("~p", [Reason]),
-    init:stop().
+    ok.
 
 random_peer(Leave) ->
     Members = riak_dt_orswot:value(Leave),

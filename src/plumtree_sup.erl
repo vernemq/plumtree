@@ -35,6 +35,8 @@ start_link() ->
 init([]) ->
     Children = lists:flatten(
                  [
+                 ?CHILD(plumtree_metadata_leveldb_iterator_sup, supervisor),
+                 ?CHILD(plumtree_metadata_leveldb_instance_sup, supervisor),
                  ?CHILD(plumtree_peer_service_gossip, worker),
                  ?CHILD(plumtree_peer_service_events, worker),
                  ?CHILD(plumtree_broadcast, worker),
