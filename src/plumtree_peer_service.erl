@@ -61,14 +61,14 @@ attempt_join(Node) ->
 attempt_join(Node, Local) ->
     {ok, Remote} = gen_server:call({plumtree_peer_service_gossip, Node}, send_state),
     Merged = riak_dt_orswot:merge(Remote, Local),
-    _ = plumtree_peer_service_manager:update_state(Merged),
+    %_ = plumtree_peer_service_manager:update_state(Merged),
     %% broadcast to all nodes
     %% get peer list
     Members = riak_dt_orswot:value(Merged),
-    _ = [gen_server:cast({plumtree_peer_service_gossip, P}, {receive_state, Merged}) || P <- Members, P /= node()],
+    _ = [gen_server:cast({plumtree_peer_service_gossip, P}, {receive_state, Merged}) || P <- Members],
     ok.
 
-leave(Args) when is_list(Args) ->
+leave(_Args) when is_list(_Args) ->
     {ok, Local} = plumtree_peer_service_manager:get_local_state(),
     {ok, Actor} = plumtree_peer_service_manager:get_actor(),
     {ok, Leave} = riak_dt_orswot:update({remove, node()}, Actor, Local),
@@ -83,9 +83,9 @@ leave(Args) when is_list(Args) ->
                 [] ->
                     %% leaving the cluster shuts down the node
                     plumtree_peer_service_manager:delete_state(),
-                    stop("Leaving cluster", Args);
+                    stop("Leaving cluster");
                 _ ->
-                    leave(Args)
+                    leave([])
             end;
         {error, singleton} ->
             lager:warning("Cannot leave, not a member of a cluster.")

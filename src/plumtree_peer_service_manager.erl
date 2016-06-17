@@ -73,12 +73,12 @@ add_self() ->
     Initial = riak_dt_orswot:new(),
     Actor = ets:lookup(?TBL, actor),
     {ok, LocalState} = riak_dt_orswot:update({add, node()}, Actor, Initial),
-    update_state(LocalState). 
+    update_state(LocalState).
 
 %% @doc generate an actor for this node while alive
 gen_actor() ->
     Node = atom_to_list(node()),
-    {M, S, U} = now(),
+    {M, S, U} = time_compat:timestamp(),
     TS = integer_to_list(M * 1000 * 1000 * 1000 * 1000 + S * 1000 * 1000 + U),
     Term = Node ++ TS,
     Actor = crypto:hash(sha, Term),
@@ -104,7 +104,7 @@ write_state_to_disk(State) ->
     end.
 
 delete_state_from_disk() ->
-    case data_root() of 
+    case data_root() of
         undefined ->
             ok;
         Dir ->

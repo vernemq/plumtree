@@ -128,7 +128,7 @@ iterator_move({MRef, Itr}, FirstKey) when is_reference(MRef) ->
 %%--------------------------------------------------------------------
 init([InstanceId, Opts]) ->
     %% Initialize random seed
-    random:seed(now()),
+    random:seed(time_compat:timestamp()),
 
     %% Get the data root directory
     DataDir1 = filename:join(app_helper:get_prop_or_env(plumtree_data_dir, Opts, plumtree),
