@@ -46,9 +46,6 @@
          graft/1,
          exchange/1]).
 
-%% used by cleanup
--export([force_delete/1]).
-
 %% utilities
 -export([size/1,
          subscribe/1,
@@ -219,15 +216,6 @@ put({{Prefix, SubPrefix}, _Key}=PKey, Context, ValueOrFun)
   when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
        (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
     read_modify_write(PKey, Context, ValueOrFun).
-
-%% @doc forcefully deletes the key
--spec force_delete(metadata_pkey()) -> ok.
-force_delete({{Prefix, SubPrefix}, _Key}=PKey)
-  when (is_binary(Prefix) orelse is_atom(Prefix)) andalso
-       (is_binary(SubPrefix) orelse is_atom(SubPrefix)) ->
-    ok = plumtree_metadata_hashtree:delete(PKey),
-    plumtree_metadata_leveldb_instance:delete(PKey),
-    ok.
 
 %% @doc same as merge/2 but merges the object on `Node'
 -spec merge(node(), {metadata_pkey(), undefined | metadata_context()}, metadata_object()) -> boolean().

@@ -31,7 +31,6 @@
 
 -export([
     read_write_delete_test/1,
-    manual_force_cleanup_test/1,
     partitioned_cluster_test/1,
     siblings_test/1
         ]).
@@ -73,8 +72,7 @@ end_per_testcase(_, _Config) ->
     ok.
 
 all() ->
-    [read_write_delete_test, manual_force_cleanup_test,
-     partitioned_cluster_test, siblings_test].
+    [read_write_delete_test, partitioned_cluster_test, siblings_test].
 
 read_write_delete_test(Config) ->
     [Node1|OtherNodes] = Nodes = proplists:get_value(nodes, Config),
@@ -94,23 +92,6 @@ read_write_delete_test(Config) ->
     ok = delete_metadata(Node1, {foo, bar}, baz),
     ok = wait_until_converged(Nodes, {foo, bar}, baz, undefined),
     ok.
-
-manual_force_cleanup_test(Config) ->
-    ok = read_write_delete_test(Config),
-    Nodes = proplists:get_value(nodes, Config),
-    {Res1, _} = rpc:multicall(Nodes, plumtree_metadata_manager, size, [{foo, bar}]),
-
-    %% every node still has one tombstone entry in the ets cache
-    ?assertEqual(length(Nodes), lists:sum(Res1)),
-    %% grace_seconds is 10 seconds, worst case we have to wait 2x that long
-    timer:sleep(20000),
-    {Res2, _} = rpc:multicall(Nodes, plumtree_metadata_manager, size, [{foo, bar}]),
-
-    ?assertEqual(0, lists:sum(Res2)),
-    ok.
-
-
-
 
 partitioned_cluster_test(Config) ->
     [Node1|OtherNodes] = Nodes = proplists:get_value(nodes, Config),

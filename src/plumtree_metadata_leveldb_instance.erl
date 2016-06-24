@@ -29,7 +29,6 @@
          name/1,
          get/1,
          put/2,
-         delete/1,
          status/1,
          data_size/1,
          iterator/2,
@@ -84,11 +83,6 @@ put(Key, Value) ->
     Name = name(InstanceId),
     gen_server:call(Name, {put, Key, Value}, infinity).
 
-delete(Key) ->
-    InstanceId = plumtree_metadata_leveldb_instance_sup:get_instance_id_for_key(Key),
-    Name = name(InstanceId),
-    gen_server:call(Name, {delete, Key}, infinity).
-
 name(Id) ->
     list_to_atom("plmtrlvld_" ++ integer_to_list(Id)).
 
@@ -142,10 +136,6 @@ init([InstanceId, Opts]) ->
     process_flag(trap_exit, true),
     case open_db(S0) of
         {ok, State} ->
-            case GraceSeconds > 0 of
-                true -> timer:send_interval(GraceSeconds * 1000, force_cleanup);
-                false -> ignore
-            end,
             {ok, init_cleanup(State#state{grace_secs=GraceSeconds})};
         {error, Reason} ->
             {stop, Reason}
@@ -184,17 +174,7 @@ handle_call({put, Key, Value}, _From, #state{write_opts=WriteOpts, ref=Ref} = St
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
-handle_call({delete, Key}, _From, #state{write_opts=WriteOpts, ref=Ref} = State) ->
-    Update = {delete, sext:encode(Key)},
-    {NewCleanup, CleanupOps} = maybe_trigger_cleanup(State),
-    %% Perform the write...
-    case eleveldb:write(Ref, [Update|CleanupOps], WriteOpts) of
-        ok ->
-            {reply, ok, State#state{cleanup=NewCleanup}};
-        {error, Reason} ->
-            {reply, {error, Reason}, State}
-    end;
-handle_call(status, _From, #state{ref=Ref} = State) ->
+handle_call(status, _From, #state{ref=Ref, cleanup=Cleanup} = State) ->
     {ok, Stats} = eleveldb:status(Ref, <<"leveldb.stats">>),
     {ok, ReadBlockError} = eleveldb:status(Ref, <<"leveldb.ReadBlockError">>),
     {reply, [{stats, Stats}, {read_block_error, ReadBlockError}], State};
@@ -256,11 +236,6 @@ handle_info({'DOWN', MRef, process, _, _}, #state{open_iterators=OpenIterators} 
             eleveldb:iterator_close(Itr)
     end,
     {noreply, State#state{open_iterators=lists:keydelete(MRef, 1, OpenIterators)}};
-handle_info(force_cleanup, #state{ref=Ref, write_opts=WriteOpts} = State) ->
-    {NewCleanup, CleanupOps} = maybe_trigger_cleanup(State),
-    %% Perform the write...
-    eleveldb:write(Ref, CleanupOps, WriteOpts),
-    {noreply, State#state{cleanup=NewCleanup}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -398,11 +373,6 @@ maybe_trigger_cleanup(Key, Val, #state{grace_secs=GS, cleanup=Cleanup}) when GS 
     end,
     incr_cleanup(Cleanup1, Now, GS);
 maybe_trigger_cleanup(_, _, #state{cleanup=Cleanup}) ->
-    {Cleanup, []}.
-
-maybe_trigger_cleanup(#state{grace_secs=GS, cleanup=Cleanup}) when GS > 0->
-    incr_cleanup(Cleanup, epoch(), GS);
-maybe_trigger_cleanup(#state{cleanup=Cleanup}) ->
     {Cleanup, []}.
 
 incr_cleanup(Cleanup, Now, GS) ->
