@@ -29,6 +29,7 @@
          name/1,
          get/1,
          put/2,
+         delete/2,
          status/1,
          data_size/1,
          iterator/2,
@@ -51,12 +52,11 @@
                 write_opts = [],
                 fold_opts = [{fill_cache, false}],
                 open_iterators = [],
-                grace_secs,
-                cleanup=maps:new()
+                grace_period,
+                refs=ets:new(?MODULE, [])
                }).
 
 -type config() :: [{atom(), term()}].
--define(TOMBSTONE, '$deleted').
 
 %%%===================================================================
 %%% API functions
@@ -82,6 +82,11 @@ put(Key, Value) ->
     InstanceId = plumtree_metadata_leveldb_instance_sup:get_instance_id_for_key(Key),
     Name = name(InstanceId),
     gen_server:call(Name, {put, Key, Value}, infinity).
+
+delete(Key, Value) ->
+    InstanceId = plumtree_metadata_leveldb_instance_sup:get_instance_id_for_key(Key),
+    Name = name(InstanceId),
+    gen_server:call(Name, {delete, Key, Value}, infinity).
 
 name(Id) ->
     list_to_atom("plmtrlvld_" ++ integer_to_list(Id)).
@@ -129,14 +134,17 @@ init([InstanceId, Opts]) ->
                              "meta"),
     DataDir2 = filename:join(DataDir1, integer_to_list(InstanceId)),
 
-    GraceSeconds = app_helper:get_prop_or_env(gc_grace_seconds, Opts, plumtree),
-
+    GracePeriod = app_helper:get_prop_or_env(gc_grace_seconds, Opts, plumtree,
+                                             60),
+    CleanupInterval = app_helper:get_prop_or_env(gc_interval, Opts, plumtree,
+                                                 10000),
     %% Initialize state
     S0 = init_state(DataDir2, Opts),
     process_flag(trap_exit, true),
     case open_db(S0) of
         {ok, State} ->
-            {ok, init_cleanup(State#state{grace_secs=GraceSeconds})};
+            erlang:send_after(CleanupInterval, self(), cleanup),
+            {ok, init_graveyard(State#state{grace_period=GracePeriod})};
         {error, Reason} ->
             {stop, Reason}
     end.
@@ -157,24 +165,22 @@ init([InstanceId, Opts]) ->
 %%--------------------------------------------------------------------
 handle_call({get, Key}, _From, #state{read_opts=ReadOpts, ref=Ref} = State) ->
     case eleveldb:get(Ref, sext:encode(Key), ReadOpts) of
-        {ok, Value} ->
-            {reply, {ok, binary_to_term(Value)}, State};
+        {ok, BVal} ->
+            Reply = {ok, binary_to_term(BVal)},
+            {reply, Reply, State};
         not_found  ->
             {reply, {error, not_found}, State};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
 handle_call({put, Key, Value}, _From, #state{write_opts=WriteOpts, ref=Ref} = State) ->
-    Update = {put, sext:encode(Key), term_to_binary(Value)},
-    {NewCleanup, CleanupOps} = maybe_trigger_cleanup(Key, Value, State),
-    %% Perform the write...
-    case eleveldb:write(Ref, [Update|CleanupOps], WriteOpts) of
-        ok ->
-            {reply, ok, State#state{cleanup=NewCleanup}};
-        {error, Reason} ->
-            {reply, {error, Reason}, State}
-    end;
-handle_call(status, _From, #state{ref=Ref, cleanup=Cleanup} = State) ->
+    UpdateOps = update_ops(Key, Value, State),
+    eleveldb:write(Ref, UpdateOps, WriteOpts),
+    {reply, true, State};
+handle_call({delete, Key, TombstoneVal}, _From, State) ->
+    Accepted = delete(Key, TombstoneVal, State),
+    {reply, Accepted, State};
+handle_call(status, _From, #state{ref=Ref} = State) ->
     {ok, Stats} = eleveldb:status(Ref, <<"leveldb.stats">>),
     {ok, ReadBlockError} = eleveldb:status(Ref, <<"leveldb.ReadBlockError">>),
     {reply, [{stats, Stats}, {read_block_error, ReadBlockError}], State};
@@ -236,6 +242,9 @@ handle_info({'DOWN', MRef, process, _, _}, #state{open_iterators=OpenIterators} 
             eleveldb:iterator_close(Itr)
     end,
     {noreply, State#state{open_iterators=lists:keydelete(MRef, 1, OpenIterators)}};
+handle_info(cleanup, State) ->
+    erlang:send_after(10000, self(), cleanup),
+    {noreply, cleanup_graveyard(State)};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -362,40 +371,104 @@ open_db(State0, RetriesLeft, _) ->
             {error, Reason}
     end.
 
-maybe_trigger_cleanup(Key, Val, #state{grace_secs=GS, cleanup=Cleanup}) when GS > 0 ->
-    Now = epoch(),
-    Cleanup1 =
-    case plumtree_metadata_object:values(Val) of
-        [?TOMBSTONE] ->
-            maps:put(Key, Now, Cleanup);
+delete(Key, TombstoneVal, #state{ref=Ref, write_opts=WriteOpts, grace_period=undefined}) ->
+    %% grace seconds disabled
+    SKey = sext:encode(Key),
+    Hash = plumtree_metadata_object:hash(TombstoneVal),
+    plumtree_metadata_hashtree:insert(Key, Hash),
+    eleveldb:write(Ref, [{put, SKey, term_to_binary(TombstoneVal)}], WriteOpts),
+    true;
+delete(Key, _, #state{ref=Ref, write_opts=WriteOpts, grace_period=0}) ->
+    %% No grace period: we are allowed to delete this key
+    %% might make sense on single node clusters
+    plumtree_metadata_hashtree:delete(Key),
+    SKey = sext:encode(Key),
+    eleveldb:write(Ref, [{delete, SKey}], WriteOpts),
+    true;
+delete(Key, TombstoneVal, #state{ref=Ref, write_opts=WriteOpts, refs=Refs}) ->
+    %% Grace period defined, add tombstone to graveyard
+    Hash = plumtree_metadata_object:hash(TombstoneVal),
+    plumtree_metadata_hashtree:insert(Key, Hash),
+    SKey = sext:encode(Key),
+    case ets:lookup(Refs, SKey) of
+        [] ->
+            TS = epoch(),
+            GraveyardKey = graveyard_key(Key),
+            ets:insert(Refs, {SKey, TS}),
+            eleveldb:write(Ref, [{put, SKey, term_to_binary(TombstoneVal)},
+                                 {put, GraveyardKey, term_to_binary(TS)}],
+                           WriteOpts),
+            true;
         _ ->
-            maps:remove(Key, Cleanup)
-    end,
-    incr_cleanup(Cleanup1, Now, GS);
-maybe_trigger_cleanup(_, _, #state{cleanup=Cleanup}) ->
-    {Cleanup, []}.
+            %% already graveyarded, we got this 'new' tombstone through merge
+            false
+    end.
 
-incr_cleanup(Cleanup, Now, GS) ->
-    KeysToDelete =
-    maps:fold(fun(K, V, Acc) when (Now - V) > GS ->
-                      [K|Acc];
-                 (_, _, Acc) ->
-                      Acc
-              end, [], Cleanup),
-    NewCleanup = maps:without(KeysToDelete, Cleanup),
-    {NewCleanup, [{delete, sext:encode(K)} || K <- KeysToDelete]}.
+update_ops(Key, Val, #state{refs=Refs}) ->
+    Hash = plumtree_metadata_object:hash(Val),
+    plumtree_metadata_hashtree:insert(Key, Hash),
+    SKey = sext:encode(Key),
+    BVal = term_to_binary(Val),
+    case ets:lookup(Refs, SKey) of
+        [] ->
+            [{put, SKey, BVal}];
+        [{_, _}] ->
+            %% remove from graveyard
+            ets:delete(Refs, SKey),
+            [{put, SKey, BVal},
+             {delete, graveyard_key(Key)}]
+    end.
 
-init_cleanup(#state{cleanup=Cleanup, fold_opts=FoldOpts, ref=Ref} = State) ->
-    Now = epoch(),
-    NewCleanup =
-    eleveldb:fold(Ref, fun({BKey, BVal} , Acc) ->
-                               case plumtree_metadata_object:values(binary_to_term(BVal)) of
-                                   [?TOMBSTONE] ->
-                                       maps:put(sext:decode(BKey), Now, Acc);
-                                   _ -> Acc
-                               end
-                       end, Cleanup, FoldOpts),
-    State#state{cleanup=NewCleanup}.
+graveyard_key(Key) ->
+    %% Key should be plain, not sext encoded
+    sext:encode({'$graveyard', Key}).
+
+init_graveyard(#state{ref=Ref, fold_opts=FoldOpts} = State) ->
+    FirstKey = graveyard_key(''),
+    {ok, Itr} = eleveldb:iterator(Ref, FoldOpts),
+    init_graveyard(eleveldb:iterator_move(Itr, FirstKey), Itr, State).
+
+init_graveyard({error, _}, _, State) ->
+    %% no need to close the iterator
+    State;
+init_graveyard({ok, SKey, Val}, Itr, State) ->
+    case sext:decode(SKey) of
+        {'$graveyard', Key} ->
+           TS = binary_to_term(Val),
+           %% We let the cleanup_graveyard check decide what to do
+           %% with tombstones older than graceseconds
+           ets:insert(State#state.refs, {sext:encode(Key), TS}),
+           init_graveyard(eleveldb:iterator_move(Itr, prefetch), Itr, State);
+        _ ->
+            eleveldb:iterator_close(Itr),
+            State
+    end.
+
+
+
+cleanup_graveyard(#state{grace_period=undefined} = State) -> State;
+cleanup_graveyard(#state{grace_period=GS, refs=Refs} = State) ->
+    MatchHead = {'$1', '$2'},
+    Guard = {'<', '$2', epoch() - GS},
+    Result = '$1',
+    MatchFunction = {MatchHead, [Guard], [Result]},
+    MatchSpec = [MatchFunction],
+    cleanup_graveyard(ets:select(Refs, MatchSpec, 100), [], State).
+
+cleanup_graveyard({[SKey|Rest], Cont}, Batch, State) ->
+    ets:delete(State#state.refs, SKey),
+    Key = sext:decode(SKey),
+    plumtree_metadata_hashtree:delete(Key),
+    cleanup_graveyard({Rest, Cont},
+                      [{delete, SKey},
+                       {delete, graveyard_key(Key)}|Batch], State);
+cleanup_graveyard({[], Cont}, Batch, #state{ref=Ref, write_opts=WriteOpts} = State) ->
+    eleveldb:write(Ref, Batch, WriteOpts),
+    cleanup_graveyard(ets:select(Cont), [], State);
+cleanup_graveyard('$end_of_table', [], State) -> State;
+cleanup_graveyard('$end_of_table', Batch, #state{ref=Ref, write_opts=WriteOpts} = State) ->
+    eleveldb:write(Ref, Batch, WriteOpts),
+    State.
 
 epoch() ->
     {MegaSecs, Secs, _} = os:timestamp(),

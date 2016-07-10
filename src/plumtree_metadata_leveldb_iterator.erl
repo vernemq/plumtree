@@ -197,22 +197,26 @@ iterate(OkVal, Instances, FullPrefix, KeyMatch, KeysOnly) when element(1, OkVal)
     %% OkVal has the form of
     %% {ok, Key} or {ok, Key, Val}
     BKey = element(2, OkVal),
-    PrefixedKey = sext:decode(BKey),
-    case prefix_match(PrefixedKey, FullPrefix) of
-        {true, Key} ->
-            case key_match(Key, KeyMatch) of
-                true when KeysOnly ->
-                    {{PrefixedKey, self()}, Instances};
-                true ->
-                    BVal = element(3, OkVal),
-                    {{{PrefixedKey, binary_to_term(BVal)}, self()}, Instances};
+    case sext:decode(BKey) of
+        {'$graveyard', _} ->
+            iterate(Instances, FullPrefix, KeyMatch, KeysOnly);
+        PrefixedKey ->
+            case prefix_match(PrefixedKey, FullPrefix) of
+                {true, Key} ->
+                    case key_match(Key, KeyMatch) of
+                        true when KeysOnly ->
+                            {{PrefixedKey, self()}, Instances};
+                        true ->
+                            BVal = element(3, OkVal),
+                            {{{PrefixedKey, binary_to_term(BVal)}, self()}, Instances};
+                        false ->
+                            iterate(Instances, FullPrefix, KeyMatch, KeysOnly)
+                    end;
                 false ->
-                    iterate(Instances, FullPrefix, KeyMatch, KeysOnly)
-            end;
-        false ->
-            [{Itr, Instance}|RestInstances] = Instances,
-            ok = plumtree_metadata_leveldb_instance:iterator_close(Instance, Itr),
-            iterate(RestInstances, FullPrefix, KeyMatch, KeysOnly)
+                    [{Itr, Instance}|RestInstances] = Instances,
+                    ok = plumtree_metadata_leveldb_instance:iterator_close(Instance, Itr),
+                    iterate(RestInstances, FullPrefix, KeyMatch, KeysOnly)
+            end
     end.
 
 prefix_match({_, Key},              {undefined, undefined}) -> {true, Key};

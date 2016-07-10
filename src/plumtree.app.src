@@ -17,7 +17,8 @@
   {env, [
          {plumtree_data_dir, "data"},
          {nr_of_meta_instances, 12},
-         {gc_grace_seconds, 0}, % tombstones wont be gc'd
+         {gc_grace_seconds, undefined}, % tombstones wont be gc'd
+         {gc_interval, 10000},
          {meta_leveldb_opts, [
                               {sync, false},
                               {total_leveldb_mem_percent, 6},
