@@ -53,6 +53,7 @@
                 fold_opts = [{fill_cache, false}],
                 open_iterators = [],
                 grace_period,
+                gc_interval,
                 refs=ets:new(?MODULE, [])
                }).
 
@@ -135,16 +136,24 @@ init([InstanceId, Opts]) ->
     DataDir2 = filename:join(DataDir1, integer_to_list(InstanceId)),
 
     GracePeriod = app_helper:get_prop_or_env(gc_grace_seconds, Opts, plumtree,
-                                             60),
-    CleanupInterval = app_helper:get_prop_or_env(gc_interval, Opts, plumtree,
-                                                 10000),
+                                             undefined),
+    CleanupInterval =
+    case GracePeriod of
+        undefined ->
+            undefined;
+        _ ->
+            I = app_helper:get_prop_or_env(gc_interval, Opts, plumtree,
+                                           10000),
+            erlang:send_after(I, self(), cleanup)
+    end,
+
     %% Initialize state
     S0 = init_state(DataDir2, Opts),
     process_flag(trap_exit, true),
     case open_db(S0) of
         {ok, State} ->
-            erlang:send_after(CleanupInterval, self(), cleanup),
-            {ok, init_graveyard(State#state{grace_period=GracePeriod})};
+            {ok, init_graveyard(State#state{grace_period=GracePeriod,
+                                            gc_interval=CleanupInterval})};
         {error, Reason} ->
             {stop, Reason}
     end.
@@ -243,7 +252,7 @@ handle_info({'DOWN', MRef, process, _, _}, #state{open_iterators=OpenIterators} 
     end,
     {noreply, State#state{open_iterators=lists:keydelete(MRef, 1, OpenIterators)}};
 handle_info(cleanup, State) ->
-    erlang:send_after(10000, self(), cleanup),
+    erlang:send_after(State#state.gc_interval, self(), cleanup),
     {noreply, cleanup_graveyard(State)};
 handle_info(_Info, State) ->
     {noreply, State}.
