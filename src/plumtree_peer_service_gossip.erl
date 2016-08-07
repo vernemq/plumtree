@@ -109,6 +109,6 @@ get_peers(Local) ->
 
 %% @doc return random peer from nodelist
 random_peer(Peers) ->
-    Idx = random:uniform(length(Peers)),
+    Idx = rnd:uniform(length(Peers)),
     Peer = lists:nth(Idx, Peers),
     {ok, Peer}.

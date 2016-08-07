@@ -511,8 +511,8 @@ new_segment_store(Opts, State) ->
     %% flushed to disk at once when under a heavy uniform load.
     WriteBufferMin = proplists:get_value(write_buffer_size_min, Config, DefaultWriteBufferMin),
     WriteBufferMax = proplists:get_value(write_buffer_size_max, Config, DefaultWriteBufferMax),
-    {Offset, _} = random:uniform_s(1 + WriteBufferMax - WriteBufferMin,
-                                   time_compat:timestamp()),
+    {Offset, _} = rnd:uniform_s(1 + WriteBufferMax - WriteBufferMin,
+                                   rnd:seed(time_compat:timestamp())),
     WriteBufferSize = WriteBufferMin + Offset,
     Config2 = orddict:store(write_buffer_size, WriteBufferSize, Config),
     Config3 = orddict:erase(write_buffer_size_min, Config2),
