@@ -10,7 +10,8 @@
                   lager,
                   eleveldb,
                   riak_dt,
-                  sext
+                  sext,
+		  rand_compat
                  ]},
   {mod, { plumtree_app, []}},
   {modules, []},

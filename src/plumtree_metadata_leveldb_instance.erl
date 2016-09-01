@@ -120,7 +120,7 @@ iterator_close(Instance, Itr) when is_pid(Instance) or is_atom(Instance) ->
 %%--------------------------------------------------------------------
 init([InstanceId, Opts]) ->
     %% Initialize random seed
-    random:seed(time_compat:timestamp()),
+    rnd:seed(time_compat:timestamp()),
 
     %% Get the data root directory
     DataDir1 = filename:join(app_helper:get_prop_or_env(plumtree_data_dir, Opts, plumtree),
@@ -288,7 +288,7 @@ init_state(DataRoot, Config) ->
     %% under heavy uniform load...
     WriteBufferMin = config_value(write_buffer_size_min, MergedConfig, 30 * 1024 * 1024),
     WriteBufferMax = config_value(write_buffer_size_max, MergedConfig, 60 * 1024 * 1024),
-    WriteBufferSize = WriteBufferMin + random:uniform(1 + WriteBufferMax - WriteBufferMin),
+    WriteBufferSize = WriteBufferMin + rnd:uniform(1 + WriteBufferMax - WriteBufferMin),
 
     %% Update the write buffer size in the merged config and make sure create_if_missing is set
     %% to true
