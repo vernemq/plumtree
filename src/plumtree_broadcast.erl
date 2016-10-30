@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 -module(plumtree_broadcast).
 
--behaviour(gen_server).
+-behaviour(gen_server2).
 
 %% API
 -export([start_link/0,
@@ -134,7 +134,7 @@ start_link() ->
 -spec start_link([nodename()], [nodename()], [nodename()], [module()]) ->
                         {ok, pid()} | ignore | {error, term}.
 start_link(InitMembers, InitEagers, InitLazys, Mods) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE,
+    gen_server2:start_link({local, ?SERVER}, ?MODULE,
                           [InitMembers, InitEagers, InitLazys, Mods], []).
 
 %% @doc Broadcasts a message originating from this node. The message will be delivered to
@@ -145,11 +145,11 @@ start_link(InitMembers, InitEagers, InitLazys, Mods) ->
 -spec broadcast(any(), module()) -> ok.
 broadcast(Broadcast, Mod) ->
     {MessageId, Payload} = Mod:broadcast_data(Broadcast),
-    gen_server:cast(?SERVER, {broadcast, MessageId, Payload, Mod}).
+    gen_server2:cast(?SERVER, {broadcast, MessageId, Payload, Mod}).
 
-%% @doc Notifies broadcast server of membership update 
+%% @doc Notifies broadcast server of membership update
 update(LocalState) ->
-    gen_server:cast(?SERVER, {update, LocalState}).
+    gen_server2:cast(?SERVER, {update, LocalState}).
 
 %% @doc Returns the broadcast servers view of full cluster membership.
 %% Wait indefinitely for a response is returned from the process
@@ -161,7 +161,7 @@ broadcast_members() ->
 %% Waits `Timeout' ms for a response from the server
 -spec broadcast_members(infinity | pos_integer()) -> ordsets:ordset(nodename()).
 broadcast_members(Timeout) ->
-    gen_server:call(?SERVER, broadcast_members, Timeout).
+    gen_server2:call(?SERVER, broadcast_members, Timeout).
 
 %% @doc return a list of exchanges, started by broadcast on thisnode, that are running
 -spec exchanges() -> exchanges().
@@ -171,7 +171,7 @@ exchanges() ->
 %% @doc returns a list of exchanges, started by broadcast on `Node', that are running
 -spec exchanges(node()) -> exchanges().
 exchanges(Node) ->
-    gen_server:call({?SERVER, Node}, exchanges, infinity).
+    gen_server2:call({?SERVER, Node}, exchanges, infinity).
 
 %% @doc cancel exchanges started by this node.
 -spec cancel_exchanges(all              |
@@ -180,7 +180,7 @@ exchanges(Node) ->
                        reference()      |
                        pid()) -> exchanges().
 cancel_exchanges(WhichExchanges) ->
-    gen_server:call(?SERVER, {cancel_exchanges, WhichExchanges}, infinity).
+    gen_server2:call(?SERVER, {cancel_exchanges, WhichExchanges}, infinity).
 
 %%%===================================================================
 %%% Debug API
@@ -197,7 +197,7 @@ debug_get_peers(Node, Root) ->
 -spec debug_get_peers(node(), node(), infinity | pos_integer()) ->
                              {ordsets:ordset(node()), ordsets:ordset(node())}.
 debug_get_peers(Node, Root, Timeout) ->
-    gen_server:call({?SERVER, Node}, {get_peers, Root}, Timeout).
+    gen_server2:call({?SERVER, Node}, {get_peers, Root}, Timeout).
 
 %% @doc return peers for all `Nodes' for tree rooted at `Root'
 %% Wait indefinitely for a response is returned from the process
@@ -295,8 +295,8 @@ handle_cast({update, LocalState}, State=#state{all_members=BroadcastMembers}) ->
 -spec handle_info(term(), #state{}) -> {noreply, #state{}} |
                                        {noreply, #state{}, non_neg_integer()} |
                                        {stop, term(), #state{}}.
-handle_info(lazy_tick, State) ->
-    schedule_lazy_tick(),
+handle_info({lazy_tick, LastTickInterval, LastTickTs}, State) ->
+    schedule_lazy_tick(LastTickInterval, LastTickTs),
     _ = send_lazy(State),
     {noreply, State};
 handle_info(exchange_tick, State) ->
@@ -568,10 +568,33 @@ send(Msg, Peers) when is_list(Peers) ->
     [send(Msg, P) || P <- Peers];
 send(Msg, P) ->
     %% TODO: add debug logging
-    gen_server:cast({?SERVER, P}, Msg).
+    gen_server2:cast({?SERVER, P}, Msg).
 
 schedule_lazy_tick() ->
-    schedule_tick(lazy_tick, broadcast_lazy_timer, 1000).
+    schedule_lazy_tick(0, os:timestamp()).
+schedule_lazy_tick(I_last, T_last) ->
+    %% Schedules the next lazy tick. Sticking to a fixed time interval causes
+    %% an exponential growth of produced i_have messages if this process is
+    %% overloaded (process mailbox is huge) and has many outstanding lazy messages.
+    %%
+    %% The idea is to measure the time it takes the lazy tick message to traverse
+    %% the mailbox and increase the next tick time if the process is overloaded.
+    %% The simple power function is used:
+    %%
+    %%      f(x): I * (1 + x)^C
+    %%
+    %%      x: overhead to traverse the mailbox
+    %%      I: constant: min tick interval, ensures the lower bound
+    %%      C: constant: 0 =< C =< 1
+    %%
+    %%      x = t_now - t_last - i_last | t_now >= t_last
+    %%
+    I = app_helper:get_env(plumtree, min_lazy_tick_interval, 10000),
+    C = 0.25,
+    T_now = os:timestamp(),
+    X = abs((timer:now_diff(T_now, T_last) div 1000) - I_last),
+    Y = round(I * math:pow(1 + X, C)),
+    schedule_tick({lazy_tick, Y, T_now}, broadcast_lazy_timer, Y).
 
 schedule_exchange_tick() ->
     schedule_tick(exchange_tick, broadcast_exchange_timer, 10000).
