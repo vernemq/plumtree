@@ -594,6 +594,13 @@ schedule_lazy_tick(I_last, T_last) ->
     T_now = os:timestamp(),
     X = abs((timer:now_diff(T_now, T_last) div 1000) - I_last),
     Y = round(I * math:pow(1 + X, C)),
+    case X > 10 of
+        true ->
+            lager:warning("Broadcast overloaded, ~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I]);
+        false ->
+            %% we don't warn if it took more than 10ms
+            lager:debug("~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I])
+    end,
     schedule_tick({lazy_tick, Y, T_now}, broadcast_lazy_timer, Y).
 
 schedule_exchange_tick() ->
