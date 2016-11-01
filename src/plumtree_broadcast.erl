@@ -393,8 +393,9 @@ send_lazy(#state{outstanding=Outstanding}) ->
     [send_lazy(Peer, Messages) || {Peer, Messages} <- orddict:to_list(Outstanding)].
 
 send_lazy(Peer, Messages) ->
+    lager:warning("XXX Peer outstanding size: ~p~n", [ordsets:size(Messages)]),
     [send_lazy(MessageId, Mod, Round, Root, Peer) ||
-        {MessageId, Mod, Round, Root} <- ordsets:to_list(Messages)].
+        {MessageId, Mod, Round, Root} <- gb_sets:to_list(Messages)].
 
 send_lazy(MessageId, Mod, Round, Root, Peer) ->
     send({i_have, MessageId, Mod, Round, Root, node()}, Peer).
@@ -496,7 +497,7 @@ random_other_node(OrdSet) ->
 ack_outstanding(MessageId, Mod, Round, Root, From, State=#state{outstanding=All}) ->
     Existing = existing_outstanding(From, All),
     Updated = set_outstanding(From,
-                              ordsets:del_element({MessageId, Mod, Round, Root}, Existing),
+                              gb_sets:del_element({MessageId, Mod, Round, Root}, Existing),
                               All),
     State#state{outstanding=Updated}.
 
@@ -508,19 +509,19 @@ add_all_outstanding(MessageId, Mod, Round, Root, Peers, State) ->
 add_outstanding(MessageId, Mod, Round, Root, Peer, State=#state{outstanding=All}) ->
     Existing = existing_outstanding(Peer, All),
     Updated = set_outstanding(Peer,
-                              ordsets:add_element({MessageId, Mod, Round, Root}, Existing),
+                              gb_sets:add_element({MessageId, Mod, Round, Root}, Existing),
                               All),
     State#state{outstanding=Updated}.
 
 set_outstanding(Peer, Outstanding, All) ->
-    case ordsets:size(Outstanding) of
+    case gb_sets:size(Outstanding) of
         0 -> orddict:erase(Peer, All);
         _ -> orddict:store(Peer, Outstanding, All)
     end.
 
 existing_outstanding(Peer, All) ->
     case orddict:find(Peer, All) of
-        error -> ordsets:new();
+        error -> gb_sets:new();
         {ok, Outstanding} -> Outstanding
     end.
 
