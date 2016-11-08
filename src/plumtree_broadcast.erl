@@ -393,7 +393,6 @@ send_lazy(#state{outstanding=Outstanding}) ->
     [send_lazy(Peer, Messages) || {Peer, Messages} <- orddict:to_list(Outstanding)].
 
 send_lazy(Peer, Messages) ->
-    lager:warning("XXX Peer outstanding size: ~p~n", [ordsets:size(Messages)]),
     [send_lazy(MessageId, Mod, Round, Root, Peer) ||
         {MessageId, Mod, Round, Root} <- gb_sets:to_list(Messages)].
 
