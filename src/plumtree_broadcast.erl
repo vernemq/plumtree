@@ -50,6 +50,14 @@
 -type outstanding()     :: {message_id(), module(), message_round(), nodename()}.
 -type exchange()        :: {module(), node(), reference(), pid()}.
 -type exchanges()       :: [exchange()].
+-type mbox_traversal_msg() :: {mbox_traversal_msg, non_neg_integer(), erlang:timestamp()}.
+
+-record(mbox_traversal, {
+          latest_msg         :: mbox_traversal_msg() | undefined,
+          waiting_for_msg    ::  mbox_traversal_msg() | undefined,
+          last_traversal_time = 0 :: non_neg_integer(),
+          tref :: reference()
+         }).
 
 -record(state, {
           %% Initially trees rooted at each node are the same.
@@ -94,7 +102,13 @@
 
           %% Set of all known members. Used to determine
           %% which members have joined and left during a membership update
-          all_members   :: ordsets:ordset(nodename())
+          all_members   :: ordsets:ordset(nodename()),
+
+          %% State used to calculate the mailbox traversal time and to
+          %% back off the exchange of lazy sets to recover from an
+          %% overload situation.
+          mbox_traversal :: term()
+
          }).
 
 %%%===================================================================
@@ -221,13 +235,18 @@ debug_get_tree(Root, Nodes) ->
                                   ignore |
                                   {stop, term()}.
 init([AllMembers, InitEagers, InitLazys, Mods]) ->
-    schedule_lazy_tick(),
     schedule_exchange_tick(),
+    MBoxTraversal = #mbox_traversal{
+                       last_traversal_time = 0,
+                       tref = schedule_mbox_traversal_tick()
+                      },
     State1 =  #state{
                  outstanding   = orddict:new(),
                  mods = lists:usort(Mods),
-                 exchanges=[]
+                 exchanges=[],
+                 mbox_traversal = MBoxTraversal
                 },
+    schedule_lazy_tick(State1),
     State2 = reset_peers(AllMembers, InitEagers, InitLazys, State1),
     {ok, State2}.
 
@@ -291,14 +310,53 @@ handle_cast({update, LocalState}, State=#state{all_members=BroadcastMembers}) ->
     State2 = neighbors_down(Removed, State1),
     {noreply, State2}.
 
+
 %% @private
 -spec handle_info(term(), #state{}) -> {noreply, #state{}} |
                                        {noreply, #state{}, non_neg_integer()} |
                                        {stop, term(), #state{}}.
-handle_info({lazy_tick, LastTickInterval, LastTickTs}, State) ->
-    schedule_lazy_tick(LastTickInterval, LastTickTs),
+handle_info(lazy_tick, State) ->
+    schedule_lazy_tick(State),
     _ = send_lazy(State),
     {noreply, State};
+handle_info(mbox_traversal_tick, #state{mbox_traversal = MBoxTraversal} = State) ->
+    %% ticks should not be scheduled if we are waiting for a message
+    NewState =
+        case MBoxTraversal of
+            #mbox_traversal{waiting_for_msg = undefined,
+                            latest_msg = OldMsg} ->
+                NewMsg = next_mbox_traversal_msg(OldMsg),
+                self() ! NewMsg,
+                State#state{mbox_traversal =
+                                MBoxTraversal#mbox_traversal{
+                                  waiting_for_msg = NewMsg,
+                                  tref = undefined}};
+            _ ->
+                %% We're waiting for a message, delay setting the next
+                %% tick until the message has arrived
+                State#state{mbox_traversal = MBoxTraversal#mbox_traversal{tref = undefined}}
+        end,
+    {noreply, NewState};
+handle_info({mbox_traversal_msg, _No, SentAt} = Msg,
+            #state{mbox_traversal = MBoxTraversal} = State) ->
+    #mbox_traversal{tref = OldTref} = MBoxTraversal,
+    Now = os:timestamp(),
+    TraversalTime = timer:now_diff(Now, SentAt) div 1000,
+    Tref =
+        case OldTref of
+            undefined -> 
+                schedule_mbox_traversal_tick();
+            OldTref -> OldTref
+        end,
+    MBoxTraversal1 =
+        MBoxTraversal#mbox_traversal{
+          waiting_for_msg = undefined,
+          latest_msg = Msg,
+          last_traversal_time = TraversalTime,
+          tref = Tref
+         },
+    State1 = State#state{mbox_traversal = MBoxTraversal1},
+    {noreply, State1};
 handle_info(exchange_tick, State) ->
     schedule_exchange_tick(),
     State1 = maybe_exchange(State),
@@ -306,6 +364,11 @@ handle_info(exchange_tick, State) ->
 handle_info({'DOWN', Ref, process, _Pid, _Reason}, State=#state{exchanges=Exchanges}) ->
     Exchanges1 = lists:keydelete(Ref, 3, Exchanges),
     {noreply, State#state{exchanges=Exchanges1}}.
+
+next_mbox_traversal_msg(undefined) ->
+    {mbox_traversal_msg, 1, os:timestamp()};
+next_mbox_traversal_msg({mbox_traversal_msg, No, _}) ->
+    {mbox_traversal_msg, No+1, os:timestamp()}.
 
 %% @private
 -spec terminate(term(), #state{}) -> term().
@@ -570,9 +633,22 @@ send(Msg, P) ->
     %% TODO: add debug logging
     gen_server2:cast({?SERVER, P}, Msg).
 
-schedule_lazy_tick() ->
-    schedule_lazy_tick(0, os:timestamp()).
-schedule_lazy_tick(I_last, T_last) ->
+-spec get_mbox_traversal_time(any()) -> non_neg_integer().
+get_mbox_traversal_time(#state{mbox_traversal = MBoxTraversal}) ->
+    get_mbox_traversal_time(MBoxTraversal);
+get_mbox_traversal_time(#mbox_traversal{waiting_for_msg = undefined,
+                                        last_traversal_time = TraversalTime}) ->
+    TraversalTime;
+get_mbox_traversal_time(#mbox_traversal{waiting_for_msg = {_,_,SentAt},
+                                        last_traversal_time = LastTraversalTime}) ->
+    Now = os:timestamp(),
+    CurrentTraversalTime = timer:now_diff(Now, SentAt),
+    max(CurrentTraversalTime, LastTraversalTime).
+
+schedule_mbox_traversal_tick() ->
+    schedule_tick(mbox_traversal_tick, mbox_traversal_timer, 200).
+
+schedule_lazy_tick(State) ->
     %% Schedules the next lazy tick. Sticking to a fixed time interval causes
     %% an exponential growth of produced i_have messages if this process is
     %% overloaded (process mailbox is huge) and has many outstanding lazy messages.
@@ -587,21 +663,18 @@ schedule_lazy_tick(I_last, T_last) ->
     %%      I: constant: min tick interval, ensures the lower bound
     %%      C: constant: 0 =< C =< 1
     %%
-    %%      x = t_now - t_last - i_last | t_now >= t_last
-    %%
     I = app_helper:get_env(plumtree, min_lazy_tick_interval, 10000),
     C = 0.25,
-    T_now = os:timestamp(),
-    X = abs((timer:now_diff(T_now, T_last) div 1000) - I_last),
+    X = get_mbox_traversal_time(State),
     Y = round(I * math:pow(1 + X, C)),
-    case X > 10 of
+    case X > 200 of
         true ->
             lager:warning("Broadcast overloaded, ~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I]);
         false ->
             %% we don't warn if it took more than 10ms
             lager:debug("~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I])
     end,
-    schedule_tick({lazy_tick, Y, T_now}, broadcast_lazy_timer, Y).
+    schedule_tick(lazy_tick, broadcast_lazy_timer, Y).
 
 schedule_exchange_tick() ->
     schedule_tick(exchange_tick, broadcast_exchange_timer, 10000).
