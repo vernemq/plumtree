@@ -17,6 +17,13 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% The plumtree_broadcast server periodically broadcasts the lazy set
+%% upon reception of a `lazy_tick` message. This message is under
+%% normal operation scheduled periodically, but in overload situations
+%% the `lazy_tick` message is scheduled later as a function based on
+%% the mailbox traversal time. The mailbox traversal time is measured
+%% by sending a `mbox_traversal_msg` message upon reception on a
+%% `mbox_traversal_tick` which is scheduled periodically, taking into 
 -module(plumtree_broadcast).
 
 -behaviour(gen_server2).
@@ -50,13 +57,13 @@
 -type outstanding()     :: {message_id(), module(), message_round(), nodename()}.
 -type exchange()        :: {module(), node(), reference(), pid()}.
 -type exchanges()       :: [exchange()].
--type mbox_traversal_msg() :: {mbox_traversal_msg, non_neg_integer(), erlang:timestamp()}.
+-type mbox_traversal_msg() :: {mbox_traversal_msg, erlang:timestamp()}.
 
 -record(mbox_traversal, {
-          latest_msg         :: mbox_traversal_msg() | undefined,
-          waiting_for_msg    ::  mbox_traversal_msg() | undefined,
+          latest_msg              :: mbox_traversal_msg() | undefined,
+          waiting_for             :: mbox_traversal_msg() | undefined,
           last_traversal_time = 0 :: non_neg_integer(),
-          tref :: reference()
+          tref                    :: reference() | undefined
          }).
 
 -record(state, {
@@ -107,7 +114,7 @@
           %% State used to calculate the mailbox traversal time and to
           %% back off the exchange of lazy sets to recover from an
           %% overload situation.
-          mbox_traversal :: term()
+          mbox_traversal :: #mbox_traversal{}
 
          }).
 
@@ -310,7 +317,6 @@ handle_cast({update, LocalState}, State=#state{all_members=BroadcastMembers}) ->
     State2 = neighbors_down(Removed, State1),
     {noreply, State2}.
 
-
 %% @private
 -spec handle_info(term(), #state{}) -> {noreply, #state{}} |
                                        {noreply, #state{}, non_neg_integer()} |
@@ -321,36 +327,37 @@ handle_info(lazy_tick, State) ->
     {noreply, State};
 handle_info(mbox_traversal_tick, #state{mbox_traversal = MBoxTraversal} = State) ->
     %% ticks should not be scheduled if we are waiting for a message
-    NewState =
-        case MBoxTraversal of
-            #mbox_traversal{waiting_for_msg = undefined,
-                            latest_msg = OldMsg} ->
-                NewMsg = next_mbox_traversal_msg(OldMsg),
-                self() ! NewMsg,
-                State#state{mbox_traversal =
-                                MBoxTraversal#mbox_traversal{
-                                  waiting_for_msg = NewMsg,
-                                  tref = undefined}};
-            _ ->
+    MBoxTraversal1 =
+        case waiting_for_mbox_msg(MBoxTraversal) of
+            true ->
                 %% We're waiting for a message, delay setting the next
-                %% tick until the message has arrived
-                State#state{mbox_traversal = MBoxTraversal#mbox_traversal{tref = undefined}}
+                %% tick until the message has arrived.
+                MBoxTraversal#mbox_traversal{tref = undefined};
+            false ->
+                NewMsg = {mbox_traversal_msg, os:timestamp()},
+                self() ! NewMsg,
+                MBoxTraversal#mbox_traversal{
+                  waiting_for = NewMsg,
+                  tref = undefined}
         end,
-    {noreply, NewState};
-handle_info({mbox_traversal_msg, _No, SentAt} = Msg,
+    {noreply, State#state{mbox_traversal = MBoxTraversal1}};
+handle_info({mbox_traversal_msg, SentAt} = Msg,
             #state{mbox_traversal = MBoxTraversal} = State) ->
-    #mbox_traversal{tref = OldTref} = MBoxTraversal,
     Now = os:timestamp(),
-    TraversalTime = timer:now_diff(Now, SentAt) div 1000,
+    TraversalTime = timer:now_diff(Now, SentAt) div 1000, 
+    #mbox_traversal{tref = OldTref} = MBoxTraversal,
     Tref =
         case OldTref of
             undefined -> 
                 schedule_mbox_traversal_tick();
-            OldTref -> OldTref
+            OldTref ->
+                %% There's still a timer active, so let's not schedule
+                %% a new one yet.
+                OldTref
         end,
     MBoxTraversal1 =
         MBoxTraversal#mbox_traversal{
-          waiting_for_msg = undefined,
+          waiting_for = undefined,
           latest_msg = Msg,
           last_traversal_time = TraversalTime,
           tref = Tref
@@ -364,11 +371,6 @@ handle_info(exchange_tick, State) ->
 handle_info({'DOWN', Ref, process, _Pid, _Reason}, State=#state{exchanges=Exchanges}) ->
     Exchanges1 = lists:keydelete(Ref, 3, Exchanges),
     {noreply, State#state{exchanges=Exchanges1}}.
-
-next_mbox_traversal_msg(undefined) ->
-    {mbox_traversal_msg, 1, os:timestamp()};
-next_mbox_traversal_msg({mbox_traversal_msg, No, _}) ->
-    {mbox_traversal_msg, No+1, os:timestamp()}.
 
 %% @private
 -spec terminate(term(), #state{}) -> term().
@@ -636,14 +638,19 @@ send(Msg, P) ->
 -spec get_mbox_traversal_time(any()) -> non_neg_integer().
 get_mbox_traversal_time(#state{mbox_traversal = MBoxTraversal}) ->
     get_mbox_traversal_time(MBoxTraversal);
-get_mbox_traversal_time(#mbox_traversal{waiting_for_msg = undefined,
+get_mbox_traversal_time(#mbox_traversal{waiting_for = undefined,
                                         last_traversal_time = TraversalTime}) ->
     TraversalTime;
-get_mbox_traversal_time(#mbox_traversal{waiting_for_msg = {_,_,SentAt},
+get_mbox_traversal_time(#mbox_traversal{waiting_for = {_,SentAt},
                                         last_traversal_time = LastTraversalTime}) ->
     Now = os:timestamp(),
     CurrentTraversalTime = timer:now_diff(Now, SentAt),
     max(CurrentTraversalTime, LastTraversalTime).
+
+waiting_for_mbox_msg(#mbox_traversal{waiting_for = undefined}) ->
+    false;
+waiting_for_mbox_msg(_) ->
+    true.
 
 schedule_mbox_traversal_tick() ->
     schedule_tick(mbox_traversal_tick, mbox_traversal_timer, 200).
