@@ -18,6 +18,11 @@
 %%
 %% -------------------------------------------------------------------
 -module(plumtree_metadata_exchange_fsm).
+-ifdef(otp20).
+-compile([{nowarn_deprecated_function,
+          [{gen_fsm,start,3},
+           {gen_fsm,send_event,2}]}]).
+-endif.
 
 -behaviour(gen_fsm).
 
