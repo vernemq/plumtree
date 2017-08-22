@@ -23,7 +23,7 @@
 %% the `lazy_tick` message is scheduled later as a function based on
 %% the mailbox traversal time. The mailbox traversal time is measured
 %% by sending a `mbox_traversal_msg` message upon reception on a
-%% `mbox_traversal_tick` which is scheduled periodically, taking into 
+%% `mbox_traversal_tick` which is scheduled periodically, taking into
 -module(plumtree_broadcast).
 
 -behaviour(gen_server2).
@@ -99,6 +99,11 @@
           %% pushes are acknowleged via graft or ignores. Entries are keyed by their
           %% destination
           outstanding   :: [{nodename(), outstanding()}],
+
+          %% Limits the messages that have not been acked (see above). If the
+          %% `outstanding' set size grows larger than this number messages aren't
+          %% added to the outstanding set. A value of 0 implies no limit.
+          outstanding_limit :: non_neg_integer(),
 
           %% Set of registered modules that may handle messages that
           %% have been broadcast
@@ -249,6 +254,7 @@ init([AllMembers, InitEagers, InitLazys, Mods]) ->
                       },
     State1 =  #state{
                  outstanding   = orddict:new(),
+                 outstanding_limit =  app_helper:get_env(plumtree, outstanding_limit, 0),
                  mods = lists:usort(Mods),
                  exchanges=[],
                  mbox_traversal = MBoxTraversal
@@ -344,11 +350,11 @@ handle_info(mbox_traversal_tick, #state{mbox_traversal = MBoxTraversal} = State)
 handle_info({mbox_traversal_msg, SentAt} = Msg,
             #state{mbox_traversal = MBoxTraversal} = State) ->
     Now = os:timestamp(),
-    TraversalTime = timer:now_diff(Now, SentAt) div 1000, 
+    TraversalTime = timer:now_diff(Now, SentAt) div 1000,
     #mbox_traversal{tref = OldTref} = MBoxTraversal,
     Tref =
         case OldTref of
-            undefined -> 
+            undefined ->
                 schedule_mbox_traversal_tick();
             OldTref ->
                 %% There's still a timer active, so let's not schedule
@@ -570,12 +576,18 @@ add_all_outstanding(MessageId, Mod, Round, Root, Peers, State) ->
                 State,
                 ordsets:to_list(Peers)).
 
-add_outstanding(MessageId, Mod, Round, Root, Peer, State=#state{outstanding=All}) ->
+add_outstanding(MessageId, Mod, Round, Root, Peer, State=#state{outstanding=All, outstanding_limit=Limit}) ->
     Existing = existing_outstanding(Peer, All),
-    Updated = set_outstanding(Peer,
-                              gb_sets:add_element({MessageId, Mod, Round, Root}, Existing),
-                              All),
-    State#state{outstanding=Updated}.
+    case (gb_sets:size(Existing) =< Limit) orelse (Limit =:= 0) of
+        true ->
+            Updated = set_outstanding(Peer,
+                                      gb_sets:add_element({MessageId, Mod, Round, Root}, Existing),
+                                      All),
+            State#state{outstanding=Updated};
+        false ->
+            %% not adding means we're load shedding
+            State
+    end.
 
 set_outstanding(Peer, Outstanding, All) ->
     case gb_sets:size(Outstanding) of
