@@ -106,7 +106,7 @@ random_peer(Leave) ->
         [] ->
             {error, singleton};
         _ ->
-            Idx = rnd:uniform(length(Peers)),
+            Idx = rand:uniform(length(Peers)),
             Peer = lists:nth(Idx, Peers),
             {ok, Peer}
     end.

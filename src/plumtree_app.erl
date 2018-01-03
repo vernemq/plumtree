@@ -25,8 +25,6 @@
 -export([start/2, stop/1]).
 
 start(_StartType, _StartArgs) ->
-    _ = application:load(rand_compat),
-    {ok, rnd} = rand_compat:init(),
     _State = plumtree_peer_service_manager:init(),
     case plumtree_sup:start_link() of
         {ok, Pid} ->

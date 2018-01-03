@@ -78,7 +78,7 @@ add_self() ->
 %% @doc generate an actor for this node while alive
 gen_actor() ->
     Node = atom_to_list(node()),
-    {M, S, U} = time_compat:timestamp(),
+    {M, S, U} = erlang:timestamp(),
     TS = integer_to_list(M * 1000 * 1000 * 1000 * 1000 + S * 1000 * 1000 + U),
     Term = Node ++ TS,
     Actor = crypto:hash(sha, Term),
