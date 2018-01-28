@@ -464,8 +464,14 @@ send_lazy(#state{outstanding=Outstanding}) ->
     [send_lazy(Peer, Messages) || {Peer, Messages} <- orddict:to_list(Outstanding)].
 
 send_lazy(Peer, Messages) ->
-    [send_lazy(MessageId, Mod, Round, Root, Peer) ||
-        {MessageId, Mod, Round, Root} <- gb_sets:to_list(Messages)].
+    %% only send to members which are reachable
+    case lists:member(Peer, nodes()) of
+        true ->
+            [send_lazy(MessageId, Mod, Round, Root, Peer) ||
+                {MessageId, Mod, Round, Root} <- gb_sets:to_list(Messages)];
+        _ ->
+            ignore
+    end.
 
 send_lazy(MessageId, Mod, Round, Root, Peer) ->
     send({i_have, MessageId, Mod, Round, Root, node()}, Peer).
