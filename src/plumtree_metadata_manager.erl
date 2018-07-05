@@ -313,7 +313,7 @@ init([]) ->
                          {stop, term(), term(), #state{}} |
                          {stop, term(), #state{}}.
 handle_call({merge, PKey, Obj}, _From, State) ->
-    Result = read_merge_write(PKey, Obj),
+    Result = read_merge_action(PKey, Obj),
     {reply, Result, State};
 handle_call({get, PKey}, _From, State) ->
     Result = read(PKey),
@@ -444,42 +444,52 @@ finish_iterator(It) ->
 iterator_match(undefined) -> undefined;
 iterator_match(KeyMatch) when is_function(KeyMatch) -> KeyMatch.
 
+read_modify_write(PKey, Context, '$deleted' = ValueOrFun) ->
+    Existing = read(PKey),
+    Modified = plumtree_metadata_object:modify(Existing, Context, ValueOrFun, node()),
+    delete(PKey, Existing, Modified),
+    Modified;
 read_modify_write(PKey, Context, ValueOrFun) ->
     Existing = read(PKey),
     Modified = plumtree_metadata_object:modify(Existing, Context, ValueOrFun, node()),
-    store(PKey, Modified).
+    store(PKey, Existing, Modified),
+    Modified.
 
-read_merge_write(PKey, Obj) ->
+read_merge_action(PKey, Obj) ->
     Existing = read(PKey),
     case plumtree_metadata_object:reconcile(Obj, Existing) of
-        false -> false;
+        false ->
+            false;
         {true, Reconciled} ->
-            store(PKey, Reconciled),
-            true
+            case plumtree_metadata_object:values(Obj) of
+                ['$deleted'|_] ->
+                    delete(PKey, Existing, Reconciled);
+                _ ->
+                    store(PKey, Existing, Reconciled)
+            end
     end.
 
-store({FullPrefix, Key}=PKey, Metadata) ->
-    Hash = plumtree_metadata_object:hash(Metadata),
+store({FullPrefix, Key}=PKey, OldMeta, Metadata) ->
     OldObj =
-    case read(PKey) of
-        undefined ->
-            undefined;
-        OldMeta ->
+    case OldMeta of
+        undefined -> undefined;
+        _ ->
             [Val|_] = plumtree_metadata_object:values(OldMeta),
             Val
     end,
-    Event =
-    case plumtree_metadata_object:values(Metadata) of
-        ['$deleted'|_] ->
-            {deleted, FullPrefix, Key, OldObj};
-        [NewObj|_] ->
-            {updated, FullPrefix, Key, OldObj, NewObj}
-    end,
-    plumtree_metadata_hashtree:insert(PKey, Hash),
-    plumtree_metadata_leveldb_instance:put(PKey, Metadata),
+    [NewObj|_] = plumtree_metadata_object:values(Metadata),
+    Event = {updated, FullPrefix, Key, OldObj, NewObj},
+    Accepted = plumtree_metadata_leveldb_instance:put(PKey, Metadata),
     trigger_subscription_event(FullPrefix, Event,
                               ets:lookup(?SUBS, FullPrefix)),
-    Metadata.
+    Accepted.
+
+delete({FullPrefix, Key}=PKey, OldObj, Metadata) ->
+    Event = {deleted, FullPrefix, Key, OldObj},
+    Accepted = plumtree_metadata_leveldb_instance:delete(PKey, Metadata),
+    trigger_subscription_event(FullPrefix, Event,
+                              ets:lookup(?SUBS, FullPrefix)),
+    Accepted.
 
 trigger_subscription_event(FullPrefix, Event, [{FullPrefix, {Pid, _}}|Rest]) ->
     Pid ! Event,

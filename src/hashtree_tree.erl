@@ -108,6 +108,7 @@
          destroy/1,
          insert/4,
          insert/5,
+         delete/3,
          update_snapshot/1,
          update_perform/1,
          local_compare/2,
@@ -225,6 +226,20 @@ insert(Prefixes, Key, Hash, Opts, Tree) ->
     case valid_prefixes(NodeName, Tree) of
         true ->
             insert_hash(Key, Hash, Opts, NodeName, Tree);
+        false ->
+            {error, bad_prefixes}
+    end.
+
+-spec delete(prefixes(), binary(), tree()) -> tree() | {error, term()}.
+delete(Prefixes, Key, Tree=#hashtree_tree{dirty=Dirty}) ->
+    NodeName = prefixes_to_node_name(Prefixes),
+    case valid_prefixes(NodeName, Tree) of
+        true ->
+            Node = get_node(NodeName, Tree),
+            Node2 = hashtree:delete(Key, Node),
+            Dirty2 = gb_sets:add_element(NodeName, Dirty),
+            _ = set_node(NodeName, Node2, Tree),
+            Tree#hashtree_tree{dirty=Dirty2};
         false ->
             {error, bad_prefixes}
     end.

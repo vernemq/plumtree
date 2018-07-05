@@ -27,7 +27,8 @@
          attempt_join/2,
          leave/1,
          stop/0,
-         stop/1
+         stop/1,
+         stop/2
         ]).
 
 %% @doc prepare node to join a cluster
@@ -89,14 +90,19 @@ leave(_Args) when is_list(_Args) ->
         {error, singleton} ->
             lager:warning("Cannot leave, not a member of a cluster.")
     end;
-leave(_Args) ->
-    leave([]).
+leave(Args) ->
+    leave(Args).
 
 stop() ->
-    stop("received stop request").
+    stop("received stop request", []).
 
 stop(Reason) ->
+    stop(Reason, []).
+
+stop(Reason, Args) ->
+    StopFun = proplists:get_value(stop_fun, Args, fun() -> ok end),
     lager:notice("~p", [Reason]),
+    StopFun(),
     ok.
 
 random_peer(Leave) ->
