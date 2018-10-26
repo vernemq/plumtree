@@ -460,20 +460,23 @@ read_merge_write(PKey, Obj) ->
 
 store({FullPrefix, Key}=PKey, Metadata) ->
     Hash = plumtree_metadata_object:hash(Metadata),
-    OldObj =
+    {OldObj, OldMetaDbg} =
     case read(PKey) of
         undefined ->
-            undefined;
+            {undefined, undefined};
         OldMeta ->
             [Val|_] = plumtree_metadata_object:values(OldMeta),
-            Val
+            {Val, OldMeta}
     end,
     Event =
     case plumtree_metadata_object:values(Metadata) of
         ['$deleted'|_] ->
             {deleted, FullPrefix, Key, OldObj};
         [NewObj|_] ->
-            {updated, FullPrefix, Key, OldObj, NewObj}
+            {updated, FullPrefix, Key, OldObj, NewObj};
+        [] ->
+            lager:warning("Known issue, please report here https://github.com/erlio/vernemq/issues/715 {~p,~p,~p}", [PKey, Metadata, OldMetaDbg]),
+            {deleted, FullPrefix, Key, OldObj}
     end,
     plumtree_metadata_hashtree:insert(PKey, Hash),
     plumtree_metadata_leveldb_instance:put(PKey, Metadata),
