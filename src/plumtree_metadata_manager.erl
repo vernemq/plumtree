@@ -458,31 +458,46 @@ read_merge_write(PKey, Obj) ->
             true
     end.
 
-store({FullPrefix, Key}=PKey, Metadata) ->
-    Hash = plumtree_metadata_object:hash(Metadata),
-    {OldObj, OldMetaDbg} =
-    case read(PKey) of
-        undefined ->
-            {undefined, undefined};
-        OldMeta ->
-            [Val|_] = plumtree_metadata_object:values(OldMeta),
-            {Val, OldMeta}
-    end,
-    Event =
-    case plumtree_metadata_object:values(Metadata) of
-        ['$deleted'|_] ->
-            {deleted, FullPrefix, Key, OldObj};
-        [NewObj|_] ->
-            {updated, FullPrefix, Key, OldObj, NewObj};
+store({FullPrefix, Key}=PKey, Metadata0) ->
+
+    OldMeta = read(PKey),
+
+    {Metadata1, Values} =
+    case plumtree_metadata_object:values(Metadata0) of
         [] ->
-            lager:warning("Known issue, please report here https://github.com/erlio/vernemq/issues/715 {~p,~p,~p}", [PKey, Metadata, OldMetaDbg]),
-            {deleted, FullPrefix, Key, OldObj}
+            % currently unknown why we could end up here
+            Context = plumtree_metadata_object:context(Metadata0),
+            lager:error("Known issue, please report here https://github.com/erlio/vernemq/issues/715 {~p,~p,~p}", [PKey, Metadata0, OldMeta]),
+            Tombstone = '$deleted',
+            {plumtree_metadata_object:modify(Metadata0, Context, Tombstone, node()), [Tombstone]};
+        ValuesTmp ->
+            {Metadata0, ValuesTmp}
     end,
+
+    Hash = plumtree_metadata_object:hash(Metadata1),
+
+    OldVal =
+    case OldMeta of
+        undefined ->
+            undefined;
+        _ ->
+            [Val|_] = plumtree_metadata_object:values(OldMeta),
+            Val
+    end,
+
+    Event =
+    case Values of
+        ['$deleted'|_] ->
+            {deleted, FullPrefix, Key, OldVal};
+        [NewVal|_] ->
+            {updated, FullPrefix, Key, OldVal, NewVal}
+    end,
+
     plumtree_metadata_hashtree:insert(PKey, Hash),
-    plumtree_metadata_leveldb_instance:put(PKey, Metadata),
+    plumtree_metadata_leveldb_instance:put(PKey, Metadata1),
     trigger_subscription_event(FullPrefix, Event,
                               ets:lookup(?SUBS, FullPrefix)),
-    Metadata.
+    Metadata1.
 
 trigger_subscription_event(FullPrefix, Event, [{FullPrefix, {Pid, _}}|Rest]) ->
     Pid ! Event,
