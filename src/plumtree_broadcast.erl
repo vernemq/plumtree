@@ -46,7 +46,7 @@
 
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+-export([init/1, handle_call/3, handle_cast/2, prioritise_cast/3, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -104,6 +104,14 @@
           %% `outstanding' set size grows larger than this number messages aren't
           %% added to the outstanding set. A value of 0 implies no limit.
           outstanding_limit :: non_neg_integer(),
+
+          %% Drops i_have messages after reaching the threshold on message queue length.
+          %% If broadcast rate reaches a level when process cannot consume messages with
+          %% enough speed there is a risk that queue could grow without limit. In order
+          %% to mitigate this problem process can drop i_have messages under heavy
+          %% load, because those messages are retried if not acknowledged.
+          %% If value set to zero, no i_have message will be dropped.
+          drop_i_have_threshold :: non_neg_integer(),
 
           %% Set of registered modules that may handle messages that
           %% have been broadcast
@@ -255,6 +263,7 @@ init([AllMembers, InitEagers, InitLazys, Mods]) ->
     State1 =  #state{
                  outstanding   = orddict:new(),
                  outstanding_limit =  app_helper:get_env(plumtree, outstanding_limit, 0),
+                 drop_i_have_threshold = app_helper:get_env(plumtree, drop_i_have_threshold, 0),
                  mods = lists:usort(Mods),
                  exchanges=[],
                  mbox_traversal = MBoxTraversal
@@ -322,6 +331,17 @@ handle_cast({update, LocalState}, State=#state{all_members=BroadcastMembers}) ->
              end,
     State2 = neighbors_down(Removed, State1),
     {noreply, State2}.
+
+%% @private
+-spec prioritise_cast(term(), non_neg_integer(), #state{}) -> integer() | drop.
+prioritise_cast({i_have, _MsgId, _Mod, _Round, _Root, _From}, Length, #state{drop_i_have_threshold=Threshold}) ->
+    %% return 'drop' atom to ignore message or message priority (default priority is zero)
+    case (Threshold > 0) and (Length > Threshold) of
+        true -> drop;
+        false -> 0
+    end;
+prioritise_cast(_Message, _Length, _State) ->
+    0.
 
 %% @private
 -spec handle_info(term(), #state{}) -> {noreply, #state{}} |
