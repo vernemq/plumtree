@@ -154,18 +154,21 @@ exchange(timeout, State=#state{peer=Peer}) ->
                          repair(Peer, Diff),
                          track_repair(Diff, Acc)
                  end,
-    Res = plumtree_metadata_hashtree:compare(RemoteFun, HandlerFun,
-                                              #exchange{local=0,remote=0,keys=0}),
-    #exchange{local=LocalPrefixes,
-              remote=RemotePrefixes,
-              keys=Keys} = Res,
-    Total = LocalPrefixes + RemotePrefixes + Keys,
-    case Total > 0 of
-        true ->
-            lager:info("completed metadata exchange with ~p. repaired ~p missing local prefixes, "
-                       "~p missing remote prefixes, and ~p keys", [Peer, LocalPrefixes, RemotePrefixes, Keys]);
-        false ->
-            lager:debug("completed metadata exchange with ~p. nothing repaired", [Peer])
+    case plumtree_metadata_hashtree:compare(RemoteFun, HandlerFun,
+                                            #exchange{local=0,remote=0,keys=0}) of
+        {error, Reason} ->
+            lager:warning("metadata exchange aborted due to ~p ~n", [Reason]);
+        #exchange{local=LocalPrefixes,
+                  remote=RemotePrefixes,
+                  keys=Keys} ->
+            Total = LocalPrefixes + RemotePrefixes + Keys,
+            case Total > 0 of
+                true ->
+                    lager:info("completed metadata exchange with ~p. repaired ~p missing local prefixes, "
+                               "~p missing remote prefixes, and ~p keys", [Peer, LocalPrefixes, RemotePrefixes, Keys]);
+                false ->
+                    lager:debug("completed metadata exchange with ~p. nothing repaired", [Peer])
+            end
     end,
     {stop, normal, State}.
 

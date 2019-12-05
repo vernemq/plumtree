@@ -159,7 +159,7 @@ update(Node) ->
 %% value from the previous call.  This function returns the return
 %% value from the last call to `HandlerFun'. {@link hashtree_tree} for
 %% more details on `RemoteFun', `HandlerFun' and `HandlerAcc'.
--spec compare(hashtree_tree:remote_fun(), hashtree_tree:handler_fun(X), X) -> X.
+-spec compare(hashtree_tree:remote_fun(), hashtree_tree:handler_fun(X), X) -> X | {error, Reason :: any()}.
 compare(RemoteFun, HandlerFun, HandlerAcc) ->
     gen_server:call(?SERVER, {compare, RemoteFun, HandlerFun, HandlerAcc}, infinity).
 
@@ -239,11 +239,30 @@ maybe_compare_async(From, _, _, HandlerAcc, _State) ->
 
 %% @private
 compare_async(From, RemoteFun, HandlerFun, HandlerAcc, #state{tree=Tree}) ->
-    spawn_link(fun() ->
-                       Res = hashtree_tree:compare(Tree, RemoteFun,
-                                                   HandlerFun, HandlerAcc),
-                       gen_server:reply(From, Res)
-               end).
+    spawn_link(
+      fun() ->
+              %% As a workaround to the issue where the
+              %% `plumtree_metadata_hashtree` crashes, while database
+              %% locks are being held, which prevents successful
+              %% recovery (due to `{error,{error_db_destroy,"IO error:
+              %% lock /var/lib/vernemq/meta/trees/LOCK: already held
+              %% by process"}}`) ultimately causing a complete node
+              %% failure, we here catch the exception and return an error
+              %% instead. The specific case was due to
+              %% `plumtree_metadata_manager:merge/3` call in the
+              %% `HandlerFun` throwing an exception
+              %% (shutdown/timeout/...). The correct fix would likely
+              %% be to refactor the code so the locks are
+              %% automatically released.
+              try
+                  Res = hashtree_tree:compare(Tree, RemoteFun,
+                                              HandlerFun, HandlerAcc),
+                  gen_server:reply(From, Res)
+              catch
+                  E:C ->
+                      gen_server:reply(From, {error, {E,C}})
+              end
+      end).
 
 %% @private
 maybe_external_update(From, State=#state{built=true,lock=undefined}) ->
