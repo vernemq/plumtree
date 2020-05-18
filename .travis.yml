@@ -3,6 +3,10 @@ language: erlang
 install: true
 otp_release:
     - 19.3
-    - 20.0
-    - 21.1
-script: "./rebar3 ct"
+    - 20.3
+    - 21.3
+    - 22.3
+    - 23.0
+script:
+  - chmod u+x rebar3
+  - ./rebar3 do upgrade, compile, xref, eunit
