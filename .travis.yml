@@ -9,4 +9,4 @@ otp_release:
     - 23.0
 script:
   - chmod u+x rebar3
-  - ./rebar3 do upgrade, compile, xref, eunit
+  - ./rebar3 do upgrade, compile, xref, eunit, ct
