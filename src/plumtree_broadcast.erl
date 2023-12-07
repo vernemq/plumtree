@@ -25,7 +25,7 @@
 %% by sending a `mbox_traversal_msg` message upon reception on a
 %% `mbox_traversal_tick` which is scheduled periodically, taking into
 -module(plumtree_broadcast).
-
+-include_lib("kernel/include/logger.hrl").
 -behaviour(gen_server2).
 
 %% API
@@ -441,7 +441,7 @@ handle_graft({ok, Message}, MessageId, Mod, Round, Root, From, State) ->
     _ = send({broadcast, MessageId, Message, Mod, Round, Root, node()}, From),
     State1;
 handle_graft({error, Reason}, _MessageId, Mod, _Round, _Root, _From, State) ->
-    lager:error("unable to graft message from ~p. reason: ~p", [Mod, Reason]),
+    ?LOG_ERROR("unable to graft message from ~p. reason: ~p", [Mod, Reason]),
     State.
 
 neighbors_down(Removed, State=#state{common_eagers=CommonEagers,eager_sets=EagerSets,
@@ -517,7 +517,7 @@ maybe_exchange(Peer, State=#state{mods=[Mod | _],exchanges=Exchanges}) ->
 exchange(Peer, State=#state{mods=[Mod | Mods],exchanges=Exchanges}) ->
     State1 = case Mod:exchange(Peer) of
                  {ok, Pid} ->
-                     lager:debug("started ~p exchange with ~p (~p)", [Mod, Peer, Pid]),
+                     ?LOG_DEBUG("started ~p exchange with ~p (~p)", [Mod, Peer, Pid]),
                      Ref = monitor(process, Pid),
                      State#state{exchanges=[{Mod, Peer, Ref, Pid} | Exchanges]};
                  {error, _Reason} ->
@@ -714,10 +714,10 @@ schedule_lazy_tick(State) ->
     Y = round(I * math:pow(1 + X, C)),
     case X > 200 of
         true ->
-            lager:warning("Broadcast overloaded, ~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I]);
+            ?LOG_WARNING("Broadcast overloaded, ~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I]);
         false ->
             %% we don't warn if it took more than 10ms
-            lager:debug("~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I])
+            ?LOG_DEBUG("~pms mailbox traversal, schedule next lazy broadcast in ~pms, the min interval is ~pms", [X, Y, I])
     end,
     schedule_tick(lazy_tick, broadcast_lazy_timer, Y).
 

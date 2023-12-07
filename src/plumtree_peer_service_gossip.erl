@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(plumtree_peer_service_gossip).
-
+-include_lib("kernel/include/logger.hrl").
 -behavior(gen_server).
 
 -define(GOSSIP_INTERVAL, 15000).
@@ -76,11 +76,11 @@ handle_info(gossip, State) ->
     {noreply, State};
 
 handle_info(_Info, State) ->
-    lager:info("Unexpected: ~p,~p.~n", [_Info, State]),
+    ?LOG_INFO("Unexpected: ~p,~p.~n", [_Info, State]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    lager:info("terminate ~p, ~p.~n", [_Reason, _State]),
+    ?LOG_INFO("terminate ~p, ~p.~n", [_Reason, _State]),
     {ok, _State}.
 
 code_change(_OldVsn, State, _Extra) ->

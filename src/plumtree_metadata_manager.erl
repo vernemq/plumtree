@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 -module(plumtree_metadata_manager).
-
+-include_lib("kernel/include/logger.hrl").
 -behaviour(gen_server).
 -behaviour(plumtree_broadcast_handler).
 
@@ -259,7 +259,7 @@ graft({PKey, Context}) ->
         undefined ->
             %% There would have to be a serious error in implementation to hit this case.
             %% Catch if here b/c it would be much harder to detect
-            lager:error("object not found during graft for key: ~p", [PKey]),
+            ?LOG_ERROR("object not found during graft for key: ~p", [PKey]),
             {error, {not_found, PKey}};
          Obj ->
             graft(Context, Obj)
@@ -467,7 +467,7 @@ store({FullPrefix, Key}=PKey, Metadata0) ->
         [] ->
             % currently unknown why we could end up here
             Context = plumtree_metadata_object:context(Metadata0),
-            lager:error("Known issue, please report here https://github.com/erlio/vernemq/issues/715 {~p,~p,~p}", [PKey, Metadata0, OldMeta]),
+            ?LOG_ERROR("Known issue, please report here https://github.com/erlio/vernemq/issues/715 {~p,~p,~p}", [PKey, Metadata0, OldMeta]),
             Tombstone = '$deleted',
             {plumtree_metadata_object:modify(Metadata0, Context, Tombstone, node()), [Tombstone]};
         ValuesTmp ->
@@ -512,7 +512,7 @@ read(PKey) ->
         {error, not_found} ->
            undefined;
         {error, Reason} ->
-            lager:warning("can't lookup key ~p due to ~p", [PKey, Reason]),
+            ?LOG_WARNING("can't lookup key ~p due to ~p", [PKey, Reason]),
             undefined
     end.
 

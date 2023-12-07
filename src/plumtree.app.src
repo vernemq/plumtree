@@ -7,7 +7,6 @@
                   kernel,
                   stdlib,
                   crypto,
-                  lager,
                   eleveldb,
                   riak_dt,
                   sext,

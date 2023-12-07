@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(plumtree_test_utils).
-
+-include_lib("kernel/include/logger.hrl").
 -export([
     get_cluster_members/1,
     pmap/2,
@@ -111,9 +111,7 @@ start_node(Name, Config, Case) ->
             PrivDir = proplists:get_value(priv_dir, Config),
             NodeDir = filename:join([PrivDir, Node, Case]),
             ok = rpc:call(Node, application, load, [plumtree]),
-            ok = rpc:call(Node, application, load, [lager]),
-            ok = rpc:call(Node, application, set_env, [lager,
-                                                       log_root,
+            ok = rpc:call(Node, application, set_env, [log_root,
                                                        NodeDir]),
             ok = rpc:call(Node, application, set_env, [plumtree,
                                                        plumtree_data_dir,
