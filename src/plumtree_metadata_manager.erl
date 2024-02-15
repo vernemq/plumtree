@@ -49,7 +49,9 @@
 %% utilities
 -export([size/1,
          subscribe/1,
-         unsubscribe/1]).
+         subscribe/2,
+         unsubscribe/1,
+         unsubscribe/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -117,11 +119,19 @@ calc_size(It, Acc) ->
 
 -spec subscribe(metadata_prefix()) -> ok.
 subscribe(FullPrefix) ->
-    gen_server:call(?SERVER, {subscribe, FullPrefix, self()}, infinity).
+    subscribe(FullPrefix, self()).
+
+-spec subscribe(metadata_prefix(), pid()) -> ok.
+subscribe(FullPrefix, Pid) when is_pid(Pid) ->
+    gen_server:call(?SERVER, {subscribe, FullPrefix, Pid}, infinity).
 
 -spec unsubscribe(metadata_prefix()) -> ok.
 unsubscribe(FullPrefix) ->
-    gen_server:call(?SERVER, {unsubscribe, FullPrefix, self()}, infinity).
+    unsubscribe(FullPrefix, self()).
+
+-spec unsubscribe(metadata_prefix(), pid()) -> ok.
+unsubscribe(FullPrefix, Pid) when is_pid(Pid) ->
+    gen_server:call(?SERVER, {unsubscribe, FullPrefix, Pid}, infinity).
 
 
 
