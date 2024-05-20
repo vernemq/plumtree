@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(metadata_SUITE).
-
+-include_lib("kernel/include/logger.hrl").
 -export([
          %% suite/0,
          init_per_suite/1,
@@ -45,7 +45,6 @@
 %% ===================================================================
 
 init_per_suite(_Config) ->
-    lager:start(),
     %% this might help, might not...
     os:cmd(os:find_executable("epmd")++" -daemon"),
     {ok, Hostname} = inet:gethostname(),
@@ -53,11 +52,10 @@ init_per_suite(_Config) ->
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
-    lager:info("node name ~p", [node()]),
+    ?LOG_INFO("node name ~p", [node()]),
     _Config.
 
 end_per_suite(_Config) ->
-    application:stop(lager),
     _Config.
 
 init_per_testcase(Case, Config) ->

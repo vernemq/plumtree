@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(plumtree_peer_service).
-
+-include_lib("kernel/include/logger.hrl").
 -export([join/1,
          join/2,
          join/3,
@@ -47,10 +47,10 @@ join(_, Node, _Auto) ->
     attempt_join(Node).
 
 attempt_join(Node) ->
-    lager:info("Sent join request to: ~p~n", [Node]),
+    ?LOG_INFO("Sent join request to: ~p~n", [Node]),
     case net_kernel:connect_node(Node) of
         false ->
-            lager:info("Unable to connect to ~p~n", [Node]),
+            ?LOG_INFO("Unable to connect to ~p~n", [Node]),
             {error, not_reachable};
         true ->
             {ok, Local} = plumtree_peer_service_manager:get_local_state(),
@@ -87,7 +87,7 @@ leave(_Args) when is_list(_Args) ->
                     leave([])
             end;
         {error, singleton} ->
-            lager:warning("Cannot leave, not a member of a cluster.")
+            ?LOG_WARNING("Cannot leave, not a member of a cluster.")
     end;
 leave(_Args) ->
     leave([]).
@@ -96,7 +96,7 @@ stop() ->
     stop("received stop request").
 
 stop(Reason) ->
-    lager:notice("~p", [Reason]),
+    ?LOG_NOTICE("~p", [Reason]),
     ok.
 
 random_peer(Leave) ->

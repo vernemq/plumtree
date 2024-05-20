@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(plumtree_peer_service_manager).
-
+-include_lib("kernel/include/logger.hrl").
 -define(TBL, cluster_state).
 
 -export([init/0, get_local_state/0, get_actor/0, update_state/1, delete_state/0]).
@@ -33,7 +33,7 @@ init() ->
                 ok
         catch
             error:badarg ->
-                lager:warning("Table ~p already exists", [?TBL])
+                ?LOG_WARNING("Table ~p already exists", [?TBL])
                 %%TODO rejoin logic
         end,
     ok.
@@ -97,7 +97,7 @@ write_state_to_disk(State) ->
         Dir ->
             File = filename:join(Dir, "cluster_state"),
             ok = filelib:ensure_dir(File),
-            lager:info("writing state ~p to disk ~p",
+            ?LOG_INFO("writing state ~p to disk ~p",
                        [State, riak_dt_orswot:to_binary(State)]),
             ok = file:write_file(File,
                                  riak_dt_orswot:to_binary(State))
@@ -112,9 +112,9 @@ delete_state_from_disk() ->
             ok = filelib:ensure_dir(File),
             case file:delete(File) of
                 ok ->
-                    lager:info("Leaving cluster, removed cluster_state");
+                    ?LOG_INFO("Leaving cluster, removed cluster_state");
                 {error, Reason} ->
-                    lager:info("Unable to remove cluster_state for reason ~p", [Reason])
+                    ?LOG_INFO("Unable to remove cluster_state for reason ~p", [Reason])
             end
     end.
 
@@ -128,7 +128,7 @@ maybe_load_state_from_disk() ->
                     {ok, Bin} = file:read_file(filename:join(Dir,
                                                              "cluster_state")),
                     {ok, State} = riak_dt_orswot:from_binary(Bin),
-                    lager:info("read state from file ~p~n", [State]),
+                    ?LOG_INFO("read state from file ~p~n", [State]),
                     update_state(State);
                 false ->
                     add_self()

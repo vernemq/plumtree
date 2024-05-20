@@ -21,7 +21,7 @@
 %% -------------------------------------------------------------------
 
 -module(plumtree_metadata_leveldb_instance).
-
+-include_lib("kernel/include/logger.hrl").
 -behaviour(gen_server).
 
 %% API functions
@@ -308,7 +308,7 @@ init_state(DataRoot, Config) ->
     BS = proplists:get_value(block_size, OpenOpts, false),
     case BS /= false andalso SSTBS == false of
         true ->
-            lager:warning("eleveldb block_size has been renamed sst_block_size "
+            ?LOG_WARNING("eleveldb block_size has been renamed sst_block_size "
                           "and the current setting of ~p is being ignored.  "
                           "Changing sst_block_size is strongly cautioned "
                           "against unless you know what you are doing.  Remove "
@@ -319,7 +319,7 @@ init_state(DataRoot, Config) ->
     end,
 
     %% Generate a debug message with the options we'll use for each operation
-    lager:info("Datadir ~s options for LevelDB: ~p\n",
+    ?LOG_INFO("Datadir ~s options for LevelDB: ~p\n",
                 [DataRoot, [{open, OpenOpts}, {read, ReadOpts}, {write, WriteOpts}, {fold, FoldOpts}]]),
     #state { data_root = DataRoot,
              open_opts = OpenOpts,
@@ -354,7 +354,7 @@ open_db(State0, RetriesLeft, _) ->
             case lists:prefix("IO error: lock ", OpenErr) of
                 true ->
                     SleepFor = app_helper:get_env(plumtree, eleveldb_open_retry_delay, 2000),
-                    lager:debug("Plumtree Leveldb backend retrying ~p in ~p ms after error ~s\n",
+                    ?LOG_DEBUG("Plumtree Leveldb backend retrying ~p in ~p ms after error ~s\n",
                                 [State0#state.data_root, SleepFor, OpenErr]),
                     timer:sleep(SleepFor),
                     open_db(State0, RetriesLeft - 1, Reason);
